@@ -17,11 +17,16 @@ The hierarchical (``show configuration``) form is handled by a separate vendor, 
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from diffnc.errors import ParseError
 from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import VendorParser
+
+if TYPE_CHECKING:
+    from diffnc.reconcile import ReconcileEvent
 
 _SET_PREFIXES = ("set ", "deactivate ", "activate ")
 _DELETE_PREFIX = "delete "
@@ -82,6 +87,15 @@ class _JunosSetParser:
         """
 
         return False
+
+    def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
+        from diffnc.reconcile import ReconcileAdd, ReconcileDelete
+
+        for ev in events:
+            if isinstance(ev, ReconcileAdd):
+                yield ev.node.line
+            elif isinstance(ev, ReconcileDelete):
+                yield f"delete {_strip_set_prefix(ev.node.line)}"
 
 
 def _apply_state_toggle(root: ConfigNode, path: str, new_line: str) -> None:

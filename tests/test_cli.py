@@ -81,6 +81,57 @@ def test_cli_vendor_override(capsys: pytest.CaptureFixture[str], tmp_path: Path)
     assert "+feature bgp" in out
 
 
+def test_cli_reconcile_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(
+        [
+            str(FIXTURES / "nxos_a.conf"),
+            str(FIXTURES / "nxos_b.conf"),
+            "-r",
+            "--color",
+            "never",
+        ]
+    )
+    assert code == 1
+    out = capsys.readouterr().out
+    # Reconcile mode emits no `--- ` / `+++ ` headers — just bare CLI lines.
+    assert "--- " not in out
+    assert "+++ " not in out
+    assert "feature ospf\n" in out
+    assert "interface Ethernet1/1\n" in out
+    assert "no description uplink\n" in out
+    assert "description uplink-to-spine\n" in out
+
+
+def test_cli_reconcile_mode_identical_files_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(
+        [
+            str(FIXTURES / "nxos_a.conf"),
+            str(FIXTURES / "nxos_a.conf"),
+            "-r",
+            "--color",
+            "never",
+        ]
+    )
+    assert code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cli_reconcile_and_unified_are_mutually_exclusive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(FIXTURES / "nxos_a.conf"),
+                str(FIXTURES / "nxos_b.conf"),
+                "-u",
+                "-r",
+            ]
+        )
+
+
 def test_cli_reorder_uses_bang_marker(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     """A pure reorder in an order-sensitive parent surfaces as ``!`` lines, not ``-/+``."""
 

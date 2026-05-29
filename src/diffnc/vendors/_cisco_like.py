@@ -24,12 +24,16 @@ so this module exposes :class:`CiscoLikeParser` parameterised on those three kno
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from diffnc.errors import ParseError
 from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import VendorParser, render_subtree
+
+if TYPE_CHECKING:
+    from diffnc.reconcile import ReconcileEvent
 
 _DEFAULT_PREFIX = "default "
 _SHUT_STATES = ("shutdown", "no shutdown")
@@ -115,8 +119,54 @@ class CiscoLikeParser:
     def is_order_sensitive(self, path: tuple[str, ...]) -> bool:
         return self.order_sensitive_predicate(path)
 
+    def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
+        from diffnc.reconcile import ReconcileAdd, ReconcileDelete, ReconcileRecreate
+
+        last_path: tuple[str, ...] | None = None
+        for ev in events:
+            if isinstance(ev, ReconcileRecreate):
+                parents = ev.section_path[:-1]
+                section_header = ev.section_path[-1]
+                yield from parents
+                yield f"no {section_header}"
+                yield from parents
+                yield section_header
+                for child in ev.new_node.children:
+                    yield from _walk_lines(child)
+                last_path = None
+                continue
+
+            if ev.parent_path != last_path:
+                yield from ev.parent_path
+                last_path = ev.parent_path
+
+            if isinstance(ev, ReconcileAdd):
+                yield from _walk_lines(ev.node)
+            elif isinstance(ev, ReconcileDelete):
+                yield _negate(ev.node.line)
+
     def _pad(self, depth: int) -> str:
         return " " * (self.indent_unit * depth)
+
+
+def _walk_lines(node: ConfigNode) -> Iterator[str]:
+    """Yield ``node.line`` followed by each descendant's line, pre-order."""
+
+    yield node.line
+    for child in node.children:
+        yield from _walk_lines(child)
+
+
+def _negate(line: str) -> str:
+    """Return the negation of *line* under Cisco's ``no`` semantics.
+
+    ``"description foo"`` → ``"no description foo"``; ``"no shutdown"`` → ``"shutdown"``.
+    Avoids ``"no no <foo>"`` double negation.
+    """
+
+    if line.startswith("no "):
+        return line[3:]
+    return f"no {line}"
 
 
 def _apply_shut_toggle(parent: ConfigNode, new_state: str) -> None:

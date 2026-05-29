@@ -17,6 +17,7 @@ from pathlib import Path
 from diffnc import __version__
 from diffnc.diff import ndiff, unified_diff
 from diffnc.errors import DiffncError
+from diffnc.reconcile import reconcile
 
 _GREEN = "\x1b[32m"
 _RED = "\x1b[31m"
@@ -38,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "ndiff":
             lines: Iterable[str] = ndiff(text_a, text_b, lineterm="\n", vendor=args.vendor)
+        elif args.mode == "reconcile":
+            lines = (f"{line}\n" for line in reconcile(text_a, text_b, vendor=args.vendor))
         else:
             lines = unified_diff(
                 text_a,
@@ -86,6 +89,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         action="store_const",
         const="ndiff",
         help="emit a verbose diff showing every line",
+    )
+    mode_group.add_argument(
+        "-r",
+        "--reconcile",
+        dest="mode",
+        action="store_const",
+        const="reconcile",
+        help="emit config-mode commands that transform FILE_A into FILE_B",
     )
     parser.set_defaults(mode="unified")
 

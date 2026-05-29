@@ -17,9 +17,13 @@ and registering it via :mod:`diffnc.vendors`.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Iterable, Iterator
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from diffnc.ir import ConfigNode, ConfigTree
+
+if TYPE_CHECKING:
+    from diffnc.reconcile import ReconcileEvent
 
 
 @runtime_checkable
@@ -39,6 +43,15 @@ class VendorParser(Protocol):
         ``path`` is the tuple of ``node.line`` values from root (exclusive) down to the
         parent whose children are being matched — e.g. ``("firewall", "filter FOO")``.
         Vendors that don't implement this fall back to order-insensitive matching.
+        """
+        ...
+
+    def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
+        """Translate :mod:`diffnc.reconcile` events into config-mode command lines.
+
+        Optional. Parsers that don't implement this can still be used for diffing; only
+        :func:`diffnc.reconcile` will fail (with :class:`NotImplementedError`) when
+        called against them.
         """
         ...
 

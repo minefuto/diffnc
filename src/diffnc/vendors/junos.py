@@ -15,11 +15,16 @@ The set form (``display set`` output) is handled by a separate vendor, see
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from diffnc.errors import ParseError
 from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import VendorParser, render_subtree
+
+if TYPE_CHECKING:
+    from diffnc.reconcile import ReconcileEvent
 
 INDENT_UNIT = 4
 
@@ -106,6 +111,40 @@ class _JunosParser:
             and path[0] == "policy-options"
             and path[1].startswith("policy-statement ")
         )
+
+    def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
+        from diffnc.reconcile import ReconcileAdd, ReconcileDelete, ReconcileRecreate
+
+        for ev in events:
+            if isinstance(ev, ReconcileRecreate):
+                section = " ".join(ev.section_path)
+                yield f"delete {section}"
+                prefix = f"set {section} "
+                for child in ev.new_node.children:
+                    yield from _walk_set(prefix, child)
+                continue
+
+            base = " ".join(ev.parent_path)
+            base_with_sep = f"{base} " if base else ""
+
+            if isinstance(ev, ReconcileAdd):
+                yield from _walk_set(f"set {base_with_sep}", ev.node)
+            elif isinstance(ev, ReconcileDelete):
+                yield f"delete {base_with_sep}{ev.node.line}"
+
+
+def _walk_set(prefix: str, node: ConfigNode) -> Iterator[str]:
+    """Yield ``prefix + <leaf-path>`` for every leaf reachable from *node*.
+
+    Sections become an intermediate ``prefix + node.line + " "`` for their descendants.
+    """
+
+    if node.is_leaf:
+        yield prefix + node.line
+        return
+    next_prefix = f"{prefix}{node.line} "
+    for child in node.children:
+        yield from _walk_set(next_prefix, child)
 
 
 def _strip_line_comment(line: str) -> str:

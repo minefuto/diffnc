@@ -52,6 +52,26 @@ from diffnc import detect_vendor
 detect_vendor(open("config.conf").read())  # -> "nxos"
 ```
 
+### `reconcile` (experimental)
+
+> **Experimental.** The output shape and exact command sequences may change in future releases. Always review the generated commands before applying them to a live device.
+
+`reconcile(a, b)` returns the bare config-mode command lines that, when entered on a device currently running config *A*, bring it to the state described by config *B*.
+
+```python
+from diffnc import reconcile
+
+for line in reconcile(a, b):
+    print(line)
+```
+
+Output is config-mode commands only — no `configure terminal` / `end` / `commit` wrappers, no indentation. Pipe through your own session manager.
+
+* **Cisco-like (NX-OS / IOS / IOS-XE / IOS-XR / EOS):** emits section navigation plus `<line>` for adds and `no <line>` for deletes (with `no no foo` collapsed to `foo`, so `no shutdown` ↔ `shutdown` toggles correctly).
+* **Junos hierarchical:** emits flat `set <path>` and `delete <path>` lines.
+* **Junos set:** emits `<line>` verbatim for adds and `delete <path>` (with the `set ` / `activate ` / `deactivate ` prefix stripped) for deletes.
+* **Order-sensitive sections** (ACL, `policy-map`, Junos `firewall filter` / `policy-statement` terms): on any change, the entire section is deleted and recreated from *B* — partial in-place edits are not attempted.
+
 Exceptions:
 
 | Exception | When it is raised |
@@ -66,6 +86,7 @@ diffnc [OPTIONS] FILE_A FILE_B
 
   -u, --unified           Structural unified diff (default)
   -n, --ndiff             Full ndiff output
+  -r, --reconcile         Emit config-mode commands that transform FILE_A into FILE_B (experimental)
   --vendor {junos,junos_set,nxos,ios,iosxe,iosxr,eos}
                           Skip auto-detection and use the given vendor
   --color {auto,always,never}
@@ -85,6 +106,16 @@ $ diffnc before.conf after.conf
  interface Ethernet1/1
 -  description uplink
 +  description uplink-to-spine
+```
+
+Or, in reconcile mode (**experimental**):
+
+```bash
+$ diffnc before.conf after.conf -r
+interface Ethernet1/1
+no description uplink
+description uplink-to-spine
+feature ospf
 ```
 
 ## Example: normalizing duplicate blocks
@@ -211,6 +242,7 @@ Create a new module under `src/diffnc/vendors/`, expose an implementation of the
 * `render_close(node, depth) -> str | None`
 * `render_leaf(node, depth) -> str`
 * `is_order_sensitive(path) -> bool` (optional; treated as always `False` if not implemented. See the "How order is handled" section.)
+* `render_reconcile(events) -> Iterator[str]` (optional; required only to support `reconcile`. Receives a sequence of `ReconcileAdd` / `ReconcileDelete` / `ReconcileRecreate` events from `diffnc.reconcile` and yields the corresponding CLI lines.)
 
 ## License
 
