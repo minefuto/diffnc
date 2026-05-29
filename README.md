@@ -10,8 +10,7 @@ A Python library and CLI that diffs network device configurations **with structu
 ## Installation
 
 ```bash
-uv add diffnc       # as a library
-uv tool install .    # as a CLI
+pip install diffnc
 ```
 
 For development:
