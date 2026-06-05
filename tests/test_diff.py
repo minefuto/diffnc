@@ -225,3 +225,40 @@ def test_nxos_default_changes_effective_diff() -> None:
     )
     b = "interface Ethernet1/1\n  description new-uplink\n"
     assert list(unified_diff(a, b)) == []
+
+
+def test_nxos_emptied_section_header_shown_as_context() -> None:
+    """An interface that loses all its children stays a context header, not a -/+ replace."""
+
+    a = "interface Ethernet1/1\n  no shutdown\n"
+    b = "interface Ethernet1/1\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == " interface Ethernet1/1\n-  no shutdown\n"
+    assert "+interface Ethernet1/1" not in out
+
+
+def test_nxos_changed_leaves_paired_adjacently() -> None:
+    """Value changes of the same setting surface as adjacent -/+ pairs, not clumped."""
+
+    a = "interface Ethernet1/2\n  ip address 192.168.1.1/24\n  ip ospf cost 50\n"
+    b = "interface Ethernet1/2\n  ip address 192.168.1.2/24\n  ip ospf cost 100\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == (
+        " interface Ethernet1/2\n"
+        "-  ip address 192.168.1.1/24\n"
+        "+  ip address 192.168.1.2/24\n"
+        "-  ip ospf cost 50\n"
+        "+  ip ospf cost 100\n"
+    )
+
+
+def test_junos_leaf_to_section_still_renders_as_replace() -> None:
+    """A Junos leaf becoming a populated section must not collapse into a context header."""
+
+    a = "interfaces {\n    ge-0/0/0;\n}\n"
+    b = "interfaces {\n    ge-0/0/0 {\n        unit 0;\n    }\n}\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert "-    ge-0/0/0;\n" in out
+    assert "+    ge-0/0/0 {\n" in out
+    assert "+        unit 0;\n" in out
+    assert "+    }\n" in out

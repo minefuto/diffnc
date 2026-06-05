@@ -27,6 +27,8 @@ from diffnc.errors import VendorMismatchError
 from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import VendorParser, is_order_sensitive_for, render_subtree
 
+_SIMILARITY_CUTOFF = 0.6  # difflib.get_close_matches の既定値に合わせる
+
 
 @dataclass(frozen=True)
 class _Event:
@@ -266,6 +268,10 @@ def _diff_children_unordered(
     splices in ``b``-only children at their natural position — i.e. before the next
     matched anchor — so ``-`` / ``+`` lines surface near each other instead of clumping
     at the start and end.
+
+    Additionally, A-only and B-only *leaves* that look like the same setting with a
+    changed value (high :class:`difflib.SequenceMatcher` ratio) are paired so the ``+``
+    is emitted immediately after its ``-``.
     """
 
     a_children = node_a.children
@@ -276,24 +282,73 @@ def _diff_children_unordered(
         child.line: idx for idx, child in enumerate(b_children) if child.line in common
     }
 
+    a_only_leaves = [
+        (idx, child)
+        for idx, child in enumerate(a_children)
+        if child.line not in common and child.is_leaf
+    ]
+    b_only_leaves = [
+        (idx, child)
+        for idx, child in enumerate(b_children)
+        if child.line not in common and child.is_leaf
+    ]
+    a_index_to_b_node, paired_b_positions = _pair_changed_leaves(a_only_leaves, b_only_leaves)
+
     b_pointer = 0
-    for child_a in a_children:
+    for idx, child_a in enumerate(a_children):
         if child_a.line not in common:
             yield from _emit_one_side(parser, child_a, depth, "-")
+            partner = a_index_to_b_node.get(idx)
+            if partner is not None:
+                yield from _emit_one_side(parser, partner, depth, "+")
             continue
         b_pos = b_match_index[child_a.line]
         if b_pos >= b_pointer:
             for k in range(b_pointer, b_pos):
                 child_b = b_children[k]
-                if child_b.line not in common:
+                if child_b.line not in common and k not in paired_b_positions:
                     yield from _emit_one_side(parser, child_b, depth, "+")
             b_pointer = b_pos + 1
         yield from _equal_pair(parser, child_a, b_by_line[child_a.line], depth, hide_equal, path)
 
     for k in range(b_pointer, len(b_children)):
         child_b = b_children[k]
-        if child_b.line not in common:
+        if child_b.line not in common and k not in paired_b_positions:
             yield from _emit_one_side(parser, child_b, depth, "+")
+
+
+def _pair_changed_leaves(
+    a_only: list[tuple[int, ConfigNode]],
+    b_only: list[tuple[int, ConfigNode]],
+) -> tuple[dict[int, ConfigNode], set[int]]:
+    """Greedily pair A-only / B-only leaves that differ only in value.
+
+    Pairs are chosen highest-similarity first (``difflib`` ratio over the raw lines),
+    each side used at most once, and only above :data:`_SIMILARITY_CUTOFF`. Returns
+    ``(a_child_index -> paired b node, set of paired b child indices)`` so the caller can
+    emit the ``+`` next to its ``-`` and suppress it elsewhere.
+    """
+
+    candidates: list[tuple[float, int, int]] = []
+    for ai, (_, a_node) in enumerate(a_only):
+        for bi, (_, b_node) in enumerate(b_only):
+            ratio = SequenceMatcher(None, a_node.line, b_node.line).ratio()
+            if ratio >= _SIMILARITY_CUTOFF:
+                candidates.append((ratio, ai, bi))
+    candidates.sort(key=lambda t: t[0], reverse=True)
+
+    used_a: set[int] = set()
+    used_b: set[int] = set()
+    a_index_to_b_node: dict[int, ConfigNode] = {}
+    paired_b_positions: set[int] = set()
+    for _, ai, bi in candidates:
+        if ai in used_a or bi in used_b:
+            continue
+        used_a.add(ai)
+        used_b.add(bi)
+        a_index_to_b_node[a_only[ai][0]] = b_only[bi][1]
+        paired_b_positions.add(b_only[bi][0])
+    return a_index_to_b_node, paired_b_positions
 
 
 def _equal_pair(
@@ -314,10 +369,15 @@ def _equal_pair(
         return
 
     if a_is_section != b_is_section:
-        # One side became a section while the other stayed a leaf — emit as replace.
-        yield from _emit_one_side(parser, child_a, depth, "-")
-        yield from _emit_one_side(parser, child_b, depth, "+")
-        return
+        leaf_node = child_b if a_is_section else child_a
+        section_node = child_a if a_is_section else child_b
+        if not _leaf_section_render_equivalent(parser, leaf_node, section_node, depth):
+            # A leaf that genuinely became a section (e.g. Junos ``foo;`` → ``foo { ... }``).
+            yield from _emit_one_side(parser, child_a, depth, "-")
+            yield from _emit_one_side(parser, child_b, depth, "+")
+            return
+        # Indent-based vendors: the "leaf" is just an empty section with the same header,
+        # so fall through and diff their children (the empty side yields all ``-``/``+``).
 
     # Both are sections with matching headers. Diff their children; only surface the section
     # header if any descendant differs (compact mode) or always (ndiff).
@@ -341,6 +401,25 @@ def _equal_pair(
     close = parser.render_close(child_a, depth)
     if close is not None:
         yield _Event(" ", close)
+
+
+def _leaf_section_render_equivalent(
+    parser: VendorParser,
+    leaf_node: ConfigNode,
+    section_node: ConfigNode,
+    depth: int,
+) -> bool:
+    """Whether promoting *leaf_node* to an empty section is render-transparent.
+
+    True for indent-based vendors (Cisco/NX-OS), where ``render_leaf == render_open`` and
+    there is no closing line, so an empty ``interface eth1`` and a populated one share the
+    same header. False for brace/terminator vendors (Junos hierarchical), where a leaf
+    (``foo;``) is structurally distinct from a section (``foo { ... }``).
+    """
+
+    return parser.render_close(section_node, depth) is None and parser.render_leaf(
+        leaf_node, depth
+    ) == parser.render_open(section_node, depth)
 
 
 def _emit_one_side(
