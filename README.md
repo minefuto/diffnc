@@ -1,5 +1,9 @@
 # diffnc(DIFF for Network device Configurations)
 
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/diffnc)
+![PyPI - Version](https://img.shields.io/pypi/v/diffnc)
+![GitHub License](https://img.shields.io/github/license/minefuto/diffnc)
+
 A Python library and CLI that diffs network device configurations **with structural awareness**, exposed through a `difflib`-like API.
 
 * Duplicate same-name blocks (e.g. `interface eth1` appearing more than once) are merged at parse time
@@ -222,7 +226,7 @@ The `VendorParser` protocol exposes `is_order_sensitive(path: tuple[str, ...]) -
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run pytest          # tests
 uv run ruff check .    # lint
 uv run ruff format .   # format
