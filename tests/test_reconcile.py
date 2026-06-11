@@ -279,3 +279,25 @@ def test_iterable_input_is_accepted() -> None:
     b_lines = ["interface eth1", "  description new"]
     out = list(reconcile(a_lines, b_lines, vendor="nxos"))
     assert out == ["interface eth1", "no description old", "description new"]
+
+
+# ---------------------------------------------------------------------------
+# Empty-side inputs
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_to_empty_deletes_everything() -> None:
+    a = "set interface ge-0/0/0 unit 0 family inet dhcp\n"
+    assert list(reconcile(a, "")) == ["delete interface ge-0/0/0 unit 0 family inet dhcp"]
+
+
+def test_reconcile_from_empty_adds_everything() -> None:
+    b = "set interface ge-0/0/0 unit 0 family inet dhcp\nset system host-name r1\n"
+    assert list(reconcile("", b)) == [
+        "set interface ge-0/0/0 unit 0 family inet dhcp",
+        "set system host-name r1",
+    ]
+
+
+def test_reconcile_both_empty_produces_no_output() -> None:
+    assert list(reconcile("", "! comment only\n")) == []

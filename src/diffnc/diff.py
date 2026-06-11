@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from diffnc import vendors as _vendors
-from diffnc.detect import detect_vendor
+from diffnc.detect import detect_vendor, is_empty_config
 from diffnc.errors import VendorMismatchError
 from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import VendorParser, is_order_sensitive_for, render_subtree
@@ -120,11 +120,21 @@ def _prepare(
     text_b = _coerce(b)
 
     if vendor is None:
-        vendor_a = detect_vendor(text_a)
-        vendor_b = detect_vendor(text_b)
-        if vendor_a != vendor_b:
-            raise VendorMismatchError(vendor_a, vendor_b)
-        vendor_name = vendor_a
+        empty_a = is_empty_config(text_a)
+        empty_b = is_empty_config(text_b)
+        if empty_a and empty_b:
+            # Nothing to detect from and nothing to diff: both trees parse empty, so no
+            # vendor-specific behaviour is ever reached and any registered parser will do.
+            vendor_name = "nxos"
+        elif empty_a or empty_b:
+            # An empty side carries no vendor signal; detect from the other side only.
+            vendor_name = detect_vendor(text_b if empty_a else text_a)
+        else:
+            vendor_a = detect_vendor(text_a)
+            vendor_b = detect_vendor(text_b)
+            if vendor_a != vendor_b:
+                raise VendorMismatchError(vendor_a, vendor_b)
+            vendor_name = vendor_a
     else:
         vendor_name = vendor
 

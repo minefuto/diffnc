@@ -117,6 +117,22 @@ def _has_eos_marker(lines: list[str]) -> bool:
     return False
 
 
+def _significant_lines(text: str) -> list[str]:
+    significant: list[str] = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s or s.startswith("!") or s.startswith("#") or s.startswith("/*"):
+            continue
+        significant.append(s)
+    return significant
+
+
+def is_empty_config(text: str) -> bool:
+    """True if *text* has no significant (non-comment) lines."""
+
+    return not _significant_lines(text)
+
+
 def detect_vendor(text: str) -> str:
     """Return the vendor name for *text*.
 
@@ -124,13 +140,7 @@ def detect_vendor(text: str) -> str:
         ParseError: if no supported vendor can be confidently identified.
     """
 
-    significant: list[str] = []
-    for raw in text.splitlines():
-        s = raw.strip()
-        if not s or s.startswith("!") or s.startswith("#") or s.startswith("/*"):
-            continue
-        significant.append(s)
-
+    significant = _significant_lines(text)
     if not significant:
         raise ParseError("configuration is empty or comment-only")
 

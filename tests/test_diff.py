@@ -262,3 +262,42 @@ def test_junos_leaf_to_section_still_renders_as_replace() -> None:
     assert "+    ge-0/0/0 {\n" in out
     assert "+        unit 0;\n" in out
     assert "+    }\n" in out
+
+
+# ---------------------------------------------------------------------------
+# Empty-side inputs
+# ---------------------------------------------------------------------------
+
+
+def test_ndiff_against_empty_b_marks_all_as_deleted() -> None:
+    a = "set interface ge-0/0/0 unit 0 family inet dhcp"
+    assert list(ndiff(a, "")) == ["- set interface ge-0/0/0 unit 0 family inet dhcp"]
+
+
+def test_unified_against_empty_a_marks_all_as_added() -> None:
+    b = "set interface ge-0/0/0 unit 0 family inet dhcp\nset system host-name r1\n"
+    assert list(unified_diff("", b)) == [
+        "+set interface ge-0/0/0 unit 0 family inet dhcp",
+        "+set system host-name r1",
+    ]
+
+
+def test_comment_only_side_treated_as_empty() -> None:
+    a = "interface Ethernet1/1\n  no shutdown\n"
+    b = "! header comment only\n"
+    out = list(unified_diff(a, b))
+    assert out == ["-interface Ethernet1/1", "-  no shutdown"]
+
+
+def test_empty_side_emits_whole_subtree() -> None:
+    a = "interface Ethernet1/1\n  description uplink\n  no shutdown\n"
+    assert list(ndiff(a, "")) == [
+        "- interface Ethernet1/1",
+        "-   description uplink",
+        "-   no shutdown",
+    ]
+
+
+def test_both_sides_empty_produce_no_output() -> None:
+    assert list(unified_diff("", "")) == []
+    assert list(ndiff("", "! comment\n")) == []
