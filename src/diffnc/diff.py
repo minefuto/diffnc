@@ -28,6 +28,7 @@ from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import VendorParser, is_order_sensitive_for, render_subtree
 
 _SIMILARITY_CUTOFF = 0.6  # difflib.get_close_matches の既定値に合わせる
+_TOKEN_SHARE_CUTOFF = 0.4  # 先頭コマンド語が一致する場合に適用する緩い二次閾値
 
 
 @dataclass(frozen=True)
@@ -327,23 +328,36 @@ def _diff_children_unordered(
             yield from _emit_one_side(parser, child_b, depth, "+")
 
 
+def _leading_token(line: str) -> str:
+    """Return the first whitespace-delimited token of *line* (its command word)."""
+
+    parts = line.split(maxsplit=1)
+    return parts[0] if parts else ""
+
+
 def _pair_changed_leaves(
     a_only: list[tuple[int, ConfigNode]],
     b_only: list[tuple[int, ConfigNode]],
 ) -> tuple[dict[int, ConfigNode], set[int]]:
     """Greedily pair A-only / B-only leaves that differ only in value.
 
-    Pairs are chosen highest-similarity first (``difflib`` ratio over the raw lines),
-    each side used at most once, and only above :data:`_SIMILARITY_CUTOFF`. Returns
-    ``(a_child_index -> paired b node, set of paired b child indices)`` so the caller can
-    emit the ``+`` next to its ``-`` and suppress it elsewhere.
+    A pair is a candidate when either the raw-line ``difflib`` ratio clears
+    :data:`_SIMILARITY_CUTOFF`, or the two leaves share the same leading command token
+    and the ratio clears the looser :data:`_TOKEN_SHARE_CUTOFF`. The latter rescues short
+    settings with a large value change (``vlan 1`` → ``vlan 1,100,200,300``) whose char
+    ratio dips below the primary cutoff. Pairs are chosen highest-ratio first and each side
+    is used at most once, so genuine high-ratio matches win before the looser fallbacks.
+
+    Returns ``(a_child_index -> paired b node, set of paired b child indices)`` so the
+    caller can emit the ``+`` next to its ``-`` and suppress it elsewhere.
     """
 
     candidates: list[tuple[float, int, int]] = []
     for ai, (_, a_node) in enumerate(a_only):
         for bi, (_, b_node) in enumerate(b_only):
             ratio = SequenceMatcher(None, a_node.line, b_node.line).ratio()
-            if ratio >= _SIMILARITY_CUTOFF:
+            shares_token = _leading_token(a_node.line) == _leading_token(b_node.line)
+            if ratio >= _SIMILARITY_CUTOFF or (shares_token and ratio >= _TOKEN_SHARE_CUTOFF):
                 candidates.append((ratio, ai, bi))
     candidates.sort(key=lambda t: t[0], reverse=True)
 

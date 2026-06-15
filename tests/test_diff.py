@@ -252,6 +252,19 @@ def test_nxos_changed_leaves_paired_adjacently() -> None:
     )
 
 
+def test_short_leaf_value_change_paired_by_leading_token() -> None:
+    """A short setting with a big value change pairs via its shared command word.
+
+    ``vlan 1`` vs ``vlan 1,100,200,300`` scores below ``_SIMILARITY_CUTOFF`` on raw chars,
+    but the shared ``vlan`` token rescues the pairing so the ``+`` sits next to its ``-``.
+    """
+
+    a = "vlan 1\nlicense smart transport smart\nlicense smart source-interface mgmt0\n"
+    b = "vlan 1,100,200,300\nlicense smart source-interface mgmt0\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == ("-vlan 1\n+vlan 1,100,200,300\n-license smart transport smart\n")
+
+
 def test_junos_leaf_to_section_still_renders_as_replace() -> None:
     """A Junos leaf becoming a populated section must not collapse into a context header."""
 
