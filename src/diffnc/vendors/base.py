@@ -46,38 +46,6 @@ class VendorParser(Protocol):
         """
         ...
 
-    def toggle_partners(self, a: str, b: str) -> bool:
-        """Return True if leaf lines *a* and *b* are the two faces of one toggle setting.
-
-        E.g. Cisco ``shutdown`` ↔ ``no shutdown``, or Junos ``activate X`` ↔
-        ``deactivate X``. When an A-only and a B-only leaf are partners the reconcile
-        engine treats the change as a state transition: it suppresses the delete of the
-        A-side and emits only the B-side value. Optional; defaults to ``False``.
-        """
-        ...
-
-    def toggle_partner_of(self, line: str) -> str | None:
-        """Return *line*'s single toggle counterpart, or ``None`` if it has none.
-
-        A faster companion to :meth:`toggle_partners`: instead of a symmetric predicate over
-        a pair, it yields the one line that would pair with *line* (``no X`` ↔ ``X``,
-        ``activate P`` ↔ ``deactivate P``). The reconcile engine uses it to detect suppressed
-        deletes with an O(1) set lookup; parsers that omit it fall back to the pairwise
-        :meth:`toggle_partners` scan. Optional.
-        """
-        ...
-
-    def is_toggle_state(self, line: str) -> bool:
-        """Return True if *line* is a toggle state that should be excluded from value-change
-        suppression.
-
-        Value-change suppression pairs A-only/B-only leaves that differ only in a trailing
-        token. Toggle states (Cisco ``no X`` / ``shutdown``, Junos ``activate``/
-        ``deactivate``) must not be matched that way — a different trailing path token means
-        a different setting, not a new value. Optional; defaults to ``False``.
-        """
-        ...
-
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
         """Translate :mod:`diffnc.reconcile` events into config-mode command lines.
 
@@ -102,7 +70,14 @@ def is_order_sensitive_for(parser: VendorParser, path: tuple[str, ...]) -> bool:
 
 
 def toggle_partners_for(parser: VendorParser, a: str, b: str) -> bool:
-    """Resolve :meth:`VendorParser.toggle_partners` with a safe default of ``False``."""
+    """Resolve a parser's optional ``toggle_partners(a, b)`` method, defaulting to ``False``.
+
+    A parser may expose ``toggle_partners`` to declare that leaf lines *a* and *b* are the two
+    faces of one toggle setting — e.g. Cisco ``shutdown`` ↔ ``no shutdown``, or Junos
+    ``activate X`` ↔ ``deactivate X``. When an A-only and a B-only leaf are partners the
+    reconcile engine treats the change as a state transition: it suppresses the delete of the
+    A side and emits only the B-side value. Parsers without the method never produce a toggle.
+    """
 
     impl = getattr(parser, "toggle_partners", None)
     if impl is None:
@@ -116,12 +91,14 @@ NO_TOGGLE_PARTNER = object()
 def toggle_partner_of_for(parser: VendorParser, line: str) -> object:
     """Resolve the optional ``VendorParser.toggle_partner_of(line)`` fast path.
 
-    Returns the single line that would be *line*'s toggle counterpart (``no X`` for ``X``,
-    ``deactivate P`` for ``activate P``, …), ``None`` when *line* has no partner, or the
-    sentinel :data:`NO_TOGGLE_PARTNER` when the parser doesn't implement the method — letting
-    callers fall back to the generic :func:`toggle_partners_for` pairwise check. The
-    single-partner form lets the reconcile engine resolve toggles with an O(1) set lookup
-    instead of an O(n²) pairwise scan.
+    A faster companion to ``toggle_partners``: instead of a symmetric predicate over a pair,
+    a parser may expose ``toggle_partner_of`` to yield the one line that would pair with
+    *line*. This returns that counterpart (``no X`` for ``X``, ``deactivate P`` for
+    ``activate P``, …), ``None`` when *line* has no partner, or the sentinel
+    :data:`NO_TOGGLE_PARTNER` when the parser doesn't implement the method — letting callers
+    fall back to the generic :func:`toggle_partners_for` pairwise check. The single-partner
+    form lets the reconcile engine resolve toggles with an O(1) set lookup instead of an
+    O(n²) pairwise scan.
     """
 
     impl = getattr(parser, "toggle_partner_of", None)
@@ -131,7 +108,14 @@ def toggle_partner_of_for(parser: VendorParser, line: str) -> object:
 
 
 def is_toggle_state_for(parser: VendorParser, line: str) -> bool:
-    """Resolve :meth:`VendorParser.is_toggle_state` with a safe default of ``False``."""
+    """Resolve a parser's optional ``is_toggle_state(line)`` method, defaulting to ``False``.
+
+    A parser may expose ``is_toggle_state`` to mark *line* as a toggle state that must be
+    excluded from value-change suppression. That suppression pairs A-only/B-only leaves
+    differing only in a trailing token; toggle states (Cisco ``no X`` / ``shutdown``, Junos
+    ``activate`` / ``deactivate``) must not be matched that way — a different trailing path
+    token there means a different setting, not a new value.
+    """
 
     impl = getattr(parser, "is_toggle_state", None)
     if impl is None:
