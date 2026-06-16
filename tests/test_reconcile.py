@@ -100,10 +100,11 @@ def test_nxos_fixture_end_to_end() -> None:
     a = _read("nxos_a.conf")
     b = _read("nxos_b.conf")
     out = list(reconcile(a, b))
-    # B adds `feature ospf` at top level and changes the eth1 description.
+    # B adds `feature ospf` at top level and changes the eth1 description. The description
+    # change differs only in the trailing token, so only the new value is emitted.
     assert "feature ospf" in out
     assert "interface Ethernet1/1" in out
-    assert "no description uplink" in out
+    assert "no description uplink" not in out
     assert "description uplink-to-spine" in out
 
 
@@ -112,7 +113,6 @@ def test_ios_vendor_uses_same_logic() -> None:
     b = "interface GigabitEthernet0/0\n description new\n"
     assert list(reconcile(a, b, vendor="ios")) == [
         "interface GigabitEthernet0/0",
-        "no description old",
         "description new",
     ]
 
@@ -162,12 +162,12 @@ def test_junos_section_delete_collapses_to_single_delete() -> None:
     assert list(reconcile(a, b, vendor="junos")) == ["delete system login"]
 
 
-def test_junos_change_emits_delete_and_set_pair() -> None:
+def test_junos_value_change_emits_set_only() -> None:
+    # `host-name router-a` -> `router-b` differs only in the trailing value token, so the
+    # new `set` overwrites the old value and no `delete` is emitted.
     a = "system {\n    host-name router-a;\n}\n"
     b = "system {\n    host-name router-b;\n}\n"
-    out = list(reconcile(a, b, vendor="junos"))
-    assert "delete system host-name router-a" in out
-    assert "set system host-name router-b" in out
+    assert list(reconcile(a, b, vendor="junos")) == ["set system host-name router-b"]
 
 
 def test_junos_firewall_filter_recreates_on_change() -> None:
@@ -198,7 +198,8 @@ def test_junos_fixture_end_to_end() -> None:
     a = _read("junos_a.conf")
     b = _read("junos_b.conf")
     out = list(reconcile(a, b))
-    assert "delete system host-name router-a" in out
+    # host-name router-a -> router-b is a trailing-value change: only the set is emitted.
+    assert "delete system host-name router-a" not in out
     assert "set system host-name router-b" in out
     assert "set interfaces ge-0/0/1 unit 0" in out
 
@@ -224,14 +225,11 @@ def test_junos_set_delete_strips_set_prefix() -> None:
     ]
 
 
-def test_junos_set_change_pairs_delete_and_set() -> None:
+def test_junos_set_value_change_emits_set_only() -> None:
     a = "set system host-name router-a\n"
     b = "set system host-name router-b\n"
     out = list(reconcile(a, b, vendor="junos_set"))
-    assert out == [
-        "delete system host-name router-a",
-        "set system host-name router-b",
-    ]
+    assert out == ["set system host-name router-b"]
 
 
 def test_junos_set_deactivate_add() -> None:
@@ -254,7 +252,8 @@ def test_junos_set_fixture_end_to_end() -> None:
     a = _read("junos_set_a.conf")
     b = _read("junos_set_b.conf")
     out = list(reconcile(a, b))
-    assert "delete system host-name router-a" in out
+    # host-name router-a -> router-b is a trailing-value change: only the set is emitted.
+    assert "delete system host-name router-a" not in out
     assert "set system host-name router-b" in out
     assert "set protocols bgp group external type external" in out
 
@@ -278,7 +277,7 @@ def test_iterable_input_is_accepted() -> None:
     a_lines = ["interface eth1", "  description old"]
     b_lines = ["interface eth1", "  description new"]
     out = list(reconcile(a_lines, b_lines, vendor="nxos"))
-    assert out == ["interface eth1", "no description old", "description new"]
+    assert out == ["interface eth1", "description new"]
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +300,38 @@ def test_reconcile_from_empty_adds_everything() -> None:
 
 def test_reconcile_both_empty_produces_no_output() -> None:
     assert list(reconcile("", "! comment only\n")) == []
+
+
+# ---------------------------------------------------------------------------
+# Trailing-value changes emit the new value only (no delete/no-prefix)
+# ---------------------------------------------------------------------------
+
+
+def test_junos_set_trailing_value_change_emits_set_only() -> None:
+    a = "set protocol ospf area 0.0.0.0 interface ge-0/0/0.0 metric 10\n"
+    b = "set protocol ospf area 0.0.0.0 interface ge-0/0/0.0 metric 1\n"
+    assert list(reconcile(a, b, vendor="junos_set")) == [
+        "set protocol ospf area 0.0.0.0 interface ge-0/0/0.0 metric 1",
+    ]
+
+
+def test_nxos_trailing_value_change_emits_new_value_only() -> None:
+    a = "interface Ethernet1/1.1\n  ip ospf cost 10\n"
+    b = "interface Ethernet1/1.1\n  ip ospf cost 1\n"
+    assert list(reconcile(a, b, vendor="nxos")) == [
+        "interface Ethernet1/1.1",
+        "ip ospf cost 1",
+    ]
+
+
+def test_nxos_mid_token_change_still_deletes_then_adds() -> None:
+    # Only the *trailing* token may differ to be treated as an overwrite. A change in an
+    # earlier token (the address here, with the mask as the trailing token) is not a value
+    # change, so the old line is negated before the new one is added.
+    a = "interface eth1\n  ip address 1.1.1.1 255.255.255.0\n"
+    b = "interface eth1\n  ip address 2.2.2.2 255.255.255.0\n"
+    assert list(reconcile(a, b, vendor="nxos")) == [
+        "interface eth1",
+        "no ip address 1.1.1.1 255.255.255.0",
+        "ip address 2.2.2.2 255.255.255.0",
+    ]

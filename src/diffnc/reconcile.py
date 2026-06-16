@@ -101,10 +101,17 @@ def _collect_events(
     b_by_line = {c.line: c for c in node_b.children}
     a_by_line = {c.line: c for c in node_a.children}
 
+    a_only_leaves = [c for c in node_a.children if c.line not in b_by_line and c.is_leaf]
+    b_only_leaves = [c for c in node_b.children if c.line not in a_by_line and c.is_leaf]
+    suppressed = _value_change_suppressed(a_only_leaves, b_only_leaves)
+
     for child_a in node_a.children:
         child_b = b_by_line.get(child_a.line)
         if child_b is None:
-            yield ReconcileDelete(parent_path, child_a)
+            # A leaf whose only difference from a B-side leaf is the trailing value token
+            # is overwritten by emitting the new value; the explicit delete is redundant.
+            if not (child_a.is_leaf and child_a.line in suppressed):
+                yield ReconcileDelete(parent_path, child_a)
             continue
         if child_a.is_leaf and child_b.is_leaf:
             continue
@@ -130,3 +137,40 @@ def _subtrees_equal(parser: VendorParser, a: ConfigNode, b: ConfigNode) -> bool:
     """True iff *a* and *b* render to identical line sequences."""
 
     return render_subtree(parser, a, 0) == render_subtree(parser, b, 0)
+
+
+def _value_head(line: str) -> str | None:
+    """The part of *line* before its trailing token, or ``None`` if it has only one token.
+
+    ``"metric 10"`` → ``"metric"``; ``"ip ospf cost 10"`` → ``"ip ospf cost"``;
+    ``"shutdown"`` → ``None``.
+    """
+
+    head, sep, _ = line.rpartition(" ")
+    return head if sep else None
+
+
+def _value_change_suppressed(
+    a_only_leaves: list[ConfigNode], b_only_leaves: list[ConfigNode]
+) -> set[str]:
+    """Return the A-only leaf lines whose deletion is superseded by a B-only value change.
+
+    An A-only leaf and a B-only leaf that share the same :func:`_value_head` (i.e. differ
+    only in the trailing value token) represent the same setting with a new value. Entering
+    the new value overwrites the old, so the explicit delete of the A line is redundant and
+    suppressed. Pairs are matched one-to-one (each B leaf justifies at most one suppression),
+    so genuinely separate settings are not collapsed.
+    """
+
+    used = [False] * len(b_only_leaves)
+    suppressed: set[str] = set()
+    for a in a_only_leaves:
+        head = _value_head(a.line)
+        if head is None:
+            continue
+        for i, b in enumerate(b_only_leaves):
+            if not used[i] and _value_head(b.line) == head:
+                used[i] = True
+                suppressed.add(a.line)
+                break
+    return suppressed

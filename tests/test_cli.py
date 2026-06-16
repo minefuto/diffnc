@@ -98,7 +98,9 @@ def test_cli_reconcile_mode(capsys: pytest.CaptureFixture[str]) -> None:
     assert "+++ " not in out
     assert "feature ospf\n" in out
     assert "interface Ethernet1/1\n" in out
-    assert "no description uplink\n" in out
+    # The description change differs only in the trailing token, so only the new value
+    # is emitted (no preceding `no description ...`).
+    assert "no description uplink\n" not in out
     assert "description uplink-to-spine\n" in out
 
 
