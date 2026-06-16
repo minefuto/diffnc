@@ -6,7 +6,9 @@ section that needs to be recreated wholesale. Each vendor's :meth:`render_reconc
 translates those events into its own CLI syntax (``no`` / ``set`` / ``delete`` ...).
 
 Output is intentionally bare config-mode commands: no ``configure terminal`` / ``end`` /
-``commit`` wrappers, no indentation. The caller is expected to pipe the result into a
+``commit`` wrappers. Lines are indented to mirror the section hierarchy (using each
+vendor's own indent unit) so the result reads like the source config; flat vendors such
+as Junos set form emit no indentation. The caller is expected to pipe the result into a
 session that's already in config mode (e.g. ``... | ssh device 'configure terminal; ...'``).
 """
 
@@ -17,7 +19,14 @@ from dataclasses import dataclass
 
 from diffnc.diff import _prepare
 from diffnc.ir import ConfigNode
-from diffnc.vendors.base import VendorParser, is_order_sensitive_for, render_subtree
+from diffnc.vendors.base import (
+    VendorParser,
+    is_order_sensitive_for,
+    is_toggle_state_for,
+    leaf_section_render_equivalent,
+    render_subtree,
+    toggle_partners_for,
+)
 
 
 @dataclass(frozen=True)
@@ -103,19 +112,25 @@ def _collect_events(
 
     a_only_leaves = [c for c in node_a.children if c.line not in b_by_line and c.is_leaf]
     b_only_leaves = [c for c in node_b.children if c.line not in a_by_line and c.is_leaf]
-    suppressed = _value_change_suppressed(a_only_leaves, b_only_leaves)
+    suppressed = _suppressed_deletes(parser, a_only_leaves, b_only_leaves)
 
     for child_a in node_a.children:
         child_b = b_by_line.get(child_a.line)
         if child_b is None:
-            # A leaf whose only difference from a B-side leaf is the trailing value token
-            # is overwritten by emitting the new value; the explicit delete is redundant.
+            # Suppressed: the A leaf is overwritten by a B-side value change, or it is one
+            # face of a toggle whose new state B emits directly (e.g. `no shutdown` ->
+            # `shutdown`), so the explicit delete would be redundant or contradictory.
             if not (child_a.is_leaf and child_a.line in suppressed):
                 yield ReconcileDelete(parent_path, child_a)
             continue
         if child_a.is_leaf and child_b.is_leaf:
             continue
-        if child_a.is_leaf != child_b.is_leaf:
+        if child_a.is_leaf != child_b.is_leaf and not _section_leaf_equivalent(
+            parser, child_a, child_b
+        ):
+            # A leaf that genuinely became a section, or vice versa (e.g. Junos `foo;` <->
+            # `foo { ... }`). Indent vendors instead fall through and diff children: an
+            # empty `interface eth1` is just a section with no children.
             yield ReconcileDelete(parent_path, child_a)
             yield ReconcileAdd(parent_path, child_b)
             continue
@@ -131,6 +146,44 @@ def _collect_events(
     for child_b in node_b.children:
         if child_b.line not in a_by_line:
             yield ReconcileAdd(parent_path, child_b)
+
+
+def _section_leaf_equivalent(
+    parser: VendorParser, child_a: ConfigNode, child_b: ConfigNode
+) -> bool:
+    """Whether a section-vs-leaf mismatch is just an empty section spelled as a leaf.
+
+    Mirrors :func:`diffnc.diff._equal_pair`: for indent-based vendors a populated and an
+    empty section share the same header line, so the two can be diffed as one section.
+    """
+
+    leaf = child_a if child_a.is_leaf else child_b
+    section = child_b if child_a.is_leaf else child_a
+    return leaf_section_render_equivalent(parser, leaf, section, 0)
+
+
+def _suppressed_deletes(
+    parser: VendorParser,
+    a_only_leaves: list[ConfigNode],
+    b_only_leaves: list[ConfigNode],
+) -> set[str]:
+    """A-only leaf lines whose ReconcileDelete should be suppressed.
+
+    Two independent reasons: the leaf is one face of a toggle whose new state appears on
+    the B side (handled by emitting the B value directly), or it is a value-only change
+    superseded by a B-side overwrite. Toggle-state lines are excluded from the value-change
+    pass — their trailing token is part of an identity (a path), not a tweakable value.
+    """
+
+    suppressed: set[str] = set()
+    for a in a_only_leaves:
+        if any(toggle_partners_for(parser, a.line, b.line) for b in b_only_leaves):
+            suppressed.add(a.line)
+
+    val_a = [c for c in a_only_leaves if not is_toggle_state_for(parser, c.line)]
+    val_b = [c for c in b_only_leaves if not is_toggle_state_for(parser, c.line)]
+    suppressed |= _value_change_suppressed(val_a, val_b)
+    return suppressed
 
 
 def _subtrees_equal(parser: VendorParser, a: ConfigNode, b: ConfigNode) -> bool:

@@ -25,7 +25,12 @@ from diffnc import vendors as _vendors
 from diffnc.detect import detect_vendor, is_empty_config
 from diffnc.errors import VendorMismatchError
 from diffnc.ir import ConfigNode, ConfigTree
-from diffnc.vendors.base import VendorParser, is_order_sensitive_for, render_subtree
+from diffnc.vendors.base import (
+    VendorParser,
+    is_order_sensitive_for,
+    leaf_section_render_equivalent,
+    render_subtree,
+)
 
 _SIMILARITY_CUTOFF = 0.6  # difflib.get_close_matches の既定値に合わせる
 _TOKEN_SHARE_CUTOFF = 0.4  # 先頭コマンド語が一致する場合に適用する緩い二次閾値
@@ -395,7 +400,7 @@ def _equal_pair(
     if a_is_section != b_is_section:
         leaf_node = child_b if a_is_section else child_a
         section_node = child_a if a_is_section else child_b
-        if not _leaf_section_render_equivalent(parser, leaf_node, section_node, depth):
+        if not leaf_section_render_equivalent(parser, leaf_node, section_node, depth):
             # A leaf that genuinely became a section (e.g. Junos ``foo;`` → ``foo { ... }``).
             yield from _emit_one_side(parser, child_a, depth, "-")
             yield from _emit_one_side(parser, child_b, depth, "+")
@@ -425,25 +430,6 @@ def _equal_pair(
     close = parser.render_close(child_a, depth)
     if close is not None:
         yield _Event(" ", close)
-
-
-def _leaf_section_render_equivalent(
-    parser: VendorParser,
-    leaf_node: ConfigNode,
-    section_node: ConfigNode,
-    depth: int,
-) -> bool:
-    """Whether promoting *leaf_node* to an empty section is render-transparent.
-
-    True for indent-based vendors (Cisco/NX-OS), where ``render_leaf == render_open`` and
-    there is no closing line, so an empty ``interface eth1`` and a populated one share the
-    same header. False for brace/terminator vendors (Junos hierarchical), where a leaf
-    (``foo;``) is structurally distinct from a section (``foo { ... }``).
-    """
-
-    return parser.render_close(section_node, depth) is None and parser.render_leaf(
-        leaf_node, depth
-    ) == parser.render_open(section_node, depth)
 
 
 def _emit_one_side(

@@ -68,11 +68,11 @@ for line in reconcile(a, b):
     print(line)
 ```
 
-Output is config-mode commands only — no `configure terminal` / `end` / `commit` wrappers, no indentation. Pipe through your own session manager.
+Output is config-mode commands only — no `configure terminal` / `end` / `commit` wrappers. Lines are indented to mirror the section hierarchy (using each vendor's own indent unit), so the result reads like the source config; flat vendors such as Junos set form emit no indentation. Pipe through your own session manager.
 
-* **Cisco-like (NX-OS / IOS / IOS-XE / IOS-XR / EOS):** emits section navigation plus `<line>` for adds and `no <line>` for deletes (with `no no foo` collapsed to `foo`, so `no shutdown` ↔ `shutdown` toggles correctly).
+* **Cisco-like (NX-OS / IOS / IOS-XE / IOS-XR / EOS):** emits section navigation plus `<line>` for adds and `no <line>` for deletes. `X` / `no X` toggles are tracked as state: a transition (e.g. `no shutdown` → `shutdown`) emits just the new value, while a *removed* toggle resets to default — `default <cmd>` on vendors that support it (IOS / IOS-XE / NX-OS / EOS) and the inverted `no` on IOS-XR.
 * **Junos hierarchical:** emits flat `set <path>` and `delete <path>` lines.
-* **Junos set:** emits `<line>` verbatim for adds and `delete <path>` (with the `set ` / `activate ` / `deactivate ` prefix stripped) for deletes.
+* **Junos set:** emits `<line>` verbatim for adds and `delete <path>` (with the `set ` prefix stripped) for deletes. `activate` / `deactivate` are tracked as state: a removed toggle inverts to its counterpart (`deactivate X` → `activate X`) rather than deleting the underlying `set`.
 * **Order-sensitive sections** (ACL, `policy-map`, Junos `firewall filter` / `policy-statement` terms): on any change, the entire section is deleted and recreated from *B* — partial in-place edits are not attempted.
 
 Exceptions:
@@ -116,8 +116,7 @@ Or, in reconcile mode (**experimental**):
 ```bash
 $ diffnc before.conf after.conf -r
 interface Ethernet1/1
-no description uplink
-description uplink-to-spine
+  description uplink-to-spine
 feature ospf
 ```
 
@@ -246,6 +245,7 @@ Create a new module under `src/diffnc/vendors/`, expose an implementation of the
 * `render_leaf(node, depth) -> str`
 * `is_order_sensitive(path) -> bool` (optional; treated as always `False` if not implemented. See the "How order is handled" section.)
 * `render_reconcile(events) -> Iterator[str]` (optional; required only to support `reconcile`. Receives a sequence of `ReconcileAdd` / `ReconcileDelete` / `ReconcileRecreate` events from `diffnc.reconcile` and yields the corresponding CLI lines.)
+* `toggle_partners(a, b) -> bool` / `is_toggle_state(line) -> bool` (optional; both default to `False`. Let `reconcile` recognise paired toggle states — e.g. `X` ↔ `no X`, `activate` ↔ `deactivate` — so a transition emits only the new value and a removed toggle is excluded from value-change matching.)
 
 ## License
 

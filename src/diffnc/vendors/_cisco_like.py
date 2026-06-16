@@ -8,10 +8,11 @@ IOS, NX-OS, IOS-XE, IOS-XR, and Arista EOS all share the same structural grammar
 * Lines starting with ``!`` or ``#`` are comments and discarded.
 * Some vendors use trailing keywords like ``end`` / ``exit`` / ``commit`` / ``root`` as
   configuration terminators that should be ignored during parse.
-* ``shutdown`` / ``no shutdown`` form a tri-state per parent — the last toggle in input
-  order wins and only one of the two appears in the parent's children.
+* ``X`` / ``no X`` form a tri-state per parent — the last toggle in input order wins and
+  only one of the two appears in the parent's children (skipped inside order-sensitive
+  sections such as ACLs, where every line is positional).
 * ``default <args>`` drops siblings under the current parent whose line equals or
-  token-prefix-matches ``<args>``.
+  token-prefix-matches ``<args>`` (including the ``no <args>`` toggle counterpart).
 
 Vendors differ only in:
 
@@ -36,7 +37,10 @@ if TYPE_CHECKING:
     from diffnc.reconcile import ReconcileEvent
 
 _DEFAULT_PREFIX = "default "
-_SHUT_STATES = ("shutdown", "no shutdown")
+# Positive boolean commands that reset to default when removed (no value to negate). Their
+# ``no`` form is handled generically via the ``no `` prefix; this set only lists the bare
+# positive spellings that are likewise toggles rather than valued settings.
+_POSITIVE_BOOLEANS = frozenset({"shutdown"})
 
 
 def cisco_default_order_sensitive(path: tuple[str, ...]) -> bool:
@@ -63,6 +67,10 @@ class CiscoLikeParser:
     order_sensitive_predicate: Callable[[tuple[str, ...]], bool] = field(
         default=cisco_default_order_sensitive
     )
+    # Whether this OS supports the ``default <cmd>`` form. IOS / IOS-XE / NX-OS / EOS do;
+    # IOS-XR does not (it resets state by inverting the ``no``). Controls how removed
+    # toggles are rendered by :meth:`render_reconcile`.
+    supports_default: bool = True
 
     def parse(self, text: str) -> ConfigTree:
         tree = ConfigTree.empty(vendor=self.name)
@@ -92,8 +100,11 @@ class CiscoLikeParser:
                 _apply_default(parent_node, path)
                 continue
 
-            if stripped in _SHUT_STATES:
-                _apply_shut_toggle(parent_node, stripped)
+            # `X` / `no X` form a per-parent toggle whose last occurrence wins. Collapse
+            # them to a single state node, except inside order-sensitive sections (ACLs,
+            # policy-maps) where every line is positional and a `no` form is a literal entry.
+            path = tuple(node.line for _, node in stack[1:])
+            if not self.order_sensitive_predicate(path) and _apply_no_toggle(parent_node, stripped):
                 continue
 
             actual = parent_node.add_child(ConfigNode(line=stripped))
@@ -119,6 +130,16 @@ class CiscoLikeParser:
     def is_order_sensitive(self, path: tuple[str, ...]) -> bool:
         return self.order_sensitive_predicate(path)
 
+    def toggle_partners(self, a: str, b: str) -> bool:
+        """``X`` and ``no X`` are the two faces of one toggle."""
+
+        return a == f"no {b}" or b == f"no {a}"
+
+    def is_toggle_state(self, line: str) -> bool:
+        """A ``no``-prefixed line or a bare positive boolean (``shutdown``)."""
+
+        return line.startswith("no ") or line in _POSITIVE_BOOLEANS
+
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
         from diffnc.reconcile import ReconcileAdd, ReconcileDelete, ReconcileRecreate
 
@@ -127,34 +148,47 @@ class CiscoLikeParser:
             if isinstance(ev, ReconcileRecreate):
                 parents = ev.section_path[:-1]
                 section_header = ev.section_path[-1]
-                yield from parents
-                yield f"no {section_header}"
-                yield from parents
-                yield section_header
+                yield from self._emit_path(parents)
+                depth = len(parents)
+                yield self._pad(depth) + f"no {section_header}"
+                yield self._pad(depth) + section_header
                 for child in ev.new_node.children:
-                    yield from _walk_lines(child)
+                    yield from render_subtree(self, child, depth + 1)
                 last_path = None
                 continue
 
             if ev.parent_path != last_path:
-                yield from ev.parent_path
+                yield from self._emit_path(ev.parent_path)
                 last_path = ev.parent_path
 
+            depth = len(ev.parent_path)
             if isinstance(ev, ReconcileAdd):
-                yield from _walk_lines(ev.node)
+                yield from render_subtree(self, ev.node, depth)
             elif isinstance(ev, ReconcileDelete):
-                yield _negate(ev.node.line)
+                if ev.node.is_leaf:
+                    yield self._pad(depth) + self._render_removal(ev.node.line)
+                else:
+                    yield self._pad(depth) + _negate(ev.node.line)
+
+    def _render_removal(self, line: str) -> str:
+        """Render the removal of a leaf setting.
+
+        Toggles (``no X`` / bare booleans) reset to default: ``default <base>`` on vendors
+        that support it, otherwise the inverted ``no`` (IOS-XR). Valued settings
+        (``description foo`` …) are negated with ``no`` as before.
+        """
+
+        if self.supports_default and self.is_toggle_state(line):
+            base = line[3:] if line.startswith("no ") else line
+            return f"default {base}"
+        return _negate(line)
+
+    def _emit_path(self, path: tuple[str, ...]) -> Iterator[str]:
+        for depth, line in enumerate(path):
+            yield self._pad(depth) + line
 
     def _pad(self, depth: int) -> str:
         return " " * (self.indent_unit * depth)
-
-
-def _walk_lines(node: ConfigNode) -> Iterator[str]:
-    """Yield ``node.line`` followed by each descendant's line, pre-order."""
-
-    yield node.line
-    for child in node.children:
-        yield from _walk_lines(child)
 
 
 def _negate(line: str) -> str:
@@ -169,27 +203,42 @@ def _negate(line: str) -> str:
     return f"no {line}"
 
 
-def _apply_shut_toggle(parent: ConfigNode, new_state: str) -> None:
-    """Toggle the shutdown/no-shutdown state under ``parent``.
+def _apply_no_toggle(parent: ConfigNode, line: str) -> bool:
+    """Collapse ``line`` with its ``X`` / ``no X`` toggle partner under ``parent``.
 
-    Replaces any existing ``shutdown``/``no shutdown`` child line in place (preserving
-    first-occurrence position), or appends a new state node when none exists.
+    If a sibling leaf is the toggle partner (same base, with or without a leading ``no``),
+    replace it in place so the last occurrence wins while keeping its position. A lone
+    ``no X`` with no partner is recorded as a leaf. Returns ``True`` when ``line`` was
+    handled as a toggle; ``False`` means the caller should add it as an ordinary node
+    (which may turn out to be a section).
     """
 
+    base = line[3:] if line.startswith("no ") else line
+    no_form = f"no {base}"
     for child in parent.children:
-        if child.line in _SHUT_STATES:
-            child.line = new_state
-            return
-    parent.children.append(ConfigNode(line=new_state))
+        if child.is_leaf and child.line in (base, no_form):
+            child.line = line  # last toggle wins; position preserved
+            return True
+    if line.startswith("no "):
+        parent.children.append(ConfigNode(line=line))
+        return True
+    return False
 
 
 def _apply_default(parent: ConfigNode, default_path: str) -> None:
-    """Drop ``parent``'s children whose line equals or token-prefix-matches ``default_path``."""
+    """Drop ``parent``'s children whose line equals or token-prefix-matches ``default_path``.
 
-    boundary = default_path + " "
+    Both the positive form and its ``no <path>`` toggle counterpart are dropped, so
+    ``default shutdown`` resets the interface whether it currently holds ``shutdown`` or
+    ``no shutdown``.
+    """
+
+    no_path = f"no {default_path}"
+    prefixes = (default_path + " ", no_path + " ")
+    exact = (default_path, no_path)
     surviving: list[ConfigNode] = []
     for child in parent.children:
-        if child.line == default_path or child.line.startswith(boundary):
+        if child.line in exact or child.line.startswith(prefixes):
             continue
         surviving.append(child)
     parent.children = surviving

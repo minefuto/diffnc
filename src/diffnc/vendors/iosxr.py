@@ -16,4 +16,6 @@ PARSER: VendorParser = CiscoLikeParser(
     name="iosxr",
     indent_unit=1,
     terminators=frozenset({"end", "exit", "commit", "root"}),
+    # IOS-XR has no `default <cmd>`; removed toggles reset by inverting the `no`.
+    supports_default=False,
 )

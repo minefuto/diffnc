@@ -88,6 +88,17 @@ class _JunosSetParser:
 
         return False
 
+    def is_toggle_state(self, line: str) -> bool:
+        """``activate <path>`` / ``deactivate <path>`` are toggle states (not ``set`` values)."""
+
+        return line.startswith(_TOGGLE_PREFIXES)
+
+    def toggle_partners(self, a: str, b: str) -> bool:
+        """One is ``activate <path>``, the other ``deactivate <path>`` for the same path."""
+
+        pa = _toggle_path(a)
+        return pa is not None and pa == _toggle_path(b) and a != b
+
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
         from diffnc.reconcile import ReconcileAdd, ReconcileDelete
 
@@ -95,7 +106,7 @@ class _JunosSetParser:
             if isinstance(ev, ReconcileAdd):
                 yield ev.node.line
             elif isinstance(ev, ReconcileDelete):
-                yield f"delete {_strip_set_prefix(ev.node.line)}"
+                yield _render_removal(ev.node.line)
 
 
 def _apply_state_toggle(root: ConfigNode, path: str, new_line: str) -> None:
@@ -112,6 +123,29 @@ def _apply_state_toggle(root: ConfigNode, path: str, new_line: str) -> None:
             child.line = new_line
             return
     root.children.append(ConfigNode(line=new_line))
+
+
+def _toggle_path(line: str) -> str | None:
+    """The path of an ``activate``/``deactivate`` line, or ``None`` for other lines."""
+
+    for prefix in _TOGGLE_PREFIXES:
+        if line.startswith(prefix):
+            return line[len(prefix) :]
+    return None
+
+
+def _render_removal(line: str) -> str:
+    """Render the removal of a final-state node.
+
+    A removed ``deactivate``/``activate`` toggle inverts to its counterpart (re-activating
+    or re-deactivating the path); a removed ``set`` statement is deleted outright.
+    """
+
+    if line.startswith("deactivate "):
+        return f"activate {line[len('deactivate ') :]}"
+    if line.startswith("activate "):
+        return f"deactivate {line[len('activate ') :]}"
+    return f"delete {_strip_set_prefix(line)}"
 
 
 def _strip_set_prefix(line: str) -> str:

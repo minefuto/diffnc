@@ -140,3 +140,28 @@ def test_shutdown_position_at_first_occurrence() -> None:
         "no shutdown",
         "ip address 1.1.1.1/24",
     ]
+
+
+def test_generic_no_toggle_collapses_to_last_state() -> None:
+    text = "interface eth1\n  ip redirects\n  no ip redirects\n"
+    tree = PARSER.parse(text)
+    iface = tree.root.children[0]
+    assert [c.line for c in iface.children] == ["no ip redirects"]
+
+
+def test_no_toggle_not_collapsed_in_order_sensitive_section() -> None:
+    # ACL entries are positional; a `no` line is a literal entry, not a toggle to fold.
+    text = "ip access-list extended FOO\n  10 permit ip any any\n  no 10 permit ip any any\n"
+    tree = PARSER.parse(text)
+    acl = tree.root.children[0]
+    assert [c.line for c in acl.children] == [
+        "10 permit ip any any",
+        "no 10 permit ip any any",
+    ]
+
+
+def test_default_resets_both_toggle_faces() -> None:
+    text = "interface eth1\n  no shutdown\n  default shutdown\n"
+    tree = PARSER.parse(text)
+    iface = tree.root.children[0]
+    assert [c.line for c in iface.children] == []

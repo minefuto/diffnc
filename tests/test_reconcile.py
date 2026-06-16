@@ -23,17 +23,17 @@ def test_nxos_leaf_add() -> None:
     b = "interface eth1\n  description foo\n  ip address 1.1.1.1/24\n"
     assert list(reconcile(a, b, vendor="nxos")) == [
         "interface eth1",
-        "ip address 1.1.1.1/24",
+        "  ip address 1.1.1.1/24",
     ]
 
 
-def test_nxos_leaf_delete_inverts_no_prefix() -> None:
+def test_nxos_emptied_section_resets_children_in_place() -> None:
     a = "interface eth1\n  description foo\n"
     b = "interface eth1\n"
-    # B's `interface eth1` parses as a leaf; the mismatch falls through to a
-    # whole-section replace.
+    # B's `interface eth1` parses as an empty section (leaf), so we keep the interface and
+    # only reset its now-removed child rather than deleting the whole section.
     out = list(reconcile(a, b, vendor="nxos"))
-    assert out == ["no interface eth1", "interface eth1"]
+    assert out == ["interface eth1", "  no description foo"]
 
 
 def test_nxos_delete_plain_leaf_negates_with_no() -> None:
@@ -41,18 +41,18 @@ def test_nxos_delete_plain_leaf_negates_with_no() -> None:
     b = "interface eth1\n  no shutdown\n"
     assert list(reconcile(a, b, vendor="nxos")) == [
         "interface eth1",
-        "no description foo",
+        "  no description foo",
     ]
 
 
-def test_nxos_delete_no_prefixed_leaf_drops_no() -> None:
-    """Deleting ``no shutdown`` means going back to the implicit ``shutdown`` state."""
+def test_nxos_delete_no_prefixed_toggle_resets_to_default() -> None:
+    """Deleting ``no shutdown`` resets the toggle to default via ``default shutdown``."""
 
     a = "interface eth1\n  description foo\n  no shutdown\n"
     b = "interface eth1\n  description foo\n"
     assert list(reconcile(a, b, vendor="nxos")) == [
         "interface eth1",
-        "shutdown",
+        "  default shutdown",
     ]
 
 
@@ -61,8 +61,8 @@ def test_nxos_add_whole_section_walks_subtree() -> None:
     b = "hostname switch-a\ninterface eth2\n  description new\n  no shutdown\n"
     assert list(reconcile(a, b, vendor="nxos")) == [
         "interface eth2",
-        "description new",
-        "no shutdown",
+        "  description new",
+        "  no shutdown",
     ]
 
 
@@ -78,8 +78,8 @@ def test_nxos_acl_change_recreates_section() -> None:
     assert list(reconcile(a, b, vendor="nxos")) == [
         "no ip access-list extended FOO",
         "ip access-list extended FOO",
-        "10 permit ip any any",
-        "20 deny ip any any",
+        "  10 permit ip any any",
+        "  20 deny ip any any",
     ]
 
 
@@ -105,7 +105,7 @@ def test_nxos_fixture_end_to_end() -> None:
     assert "feature ospf" in out
     assert "interface Ethernet1/1" in out
     assert "no description uplink" not in out
-    assert "description uplink-to-spine" in out
+    assert "  description uplink-to-spine" in out
 
 
 def test_ios_vendor_uses_same_logic() -> None:
@@ -113,7 +113,59 @@ def test_ios_vendor_uses_same_logic() -> None:
     b = "interface GigabitEthernet0/0\n description new\n"
     assert list(reconcile(a, b, vendor="ios")) == [
         "interface GigabitEthernet0/0",
-        "description new",
+        " description new",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Cisco shutdown / no-toggle state management
+# ---------------------------------------------------------------------------
+
+
+def test_nxos_toggle_transition_emits_single_value() -> None:
+    # no shutdown -> shutdown is a state transition: emit the new value once, not a
+    # `shutdown` from negating the old plus another `shutdown` for the new.
+    a = "interface eth1\n  no shutdown\n"
+    b = "interface eth1\n  shutdown\n"
+    assert list(reconcile(a, b, vendor="nxos")) == ["interface eth1", "  shutdown"]
+
+
+def test_generic_no_toggle_transition_no_duplicate() -> None:
+    a = "interface eth1\n  no ip redirects\n"
+    b = "interface eth1\n  ip redirects\n"
+    assert list(reconcile(a, b, vendor="nxos")) == ["interface eth1", "  ip redirects"]
+
+
+def test_nxos_positive_toggle_removed_resets_to_default() -> None:
+    a = "interface eth1\n  shutdown\n"
+    b = "interface eth1\n"
+    assert list(reconcile(a, b, vendor="nxos")) == ["interface eth1", "  default shutdown"]
+
+
+def test_iosxr_toggle_removed_inverts_instead_of_default() -> None:
+    # IOS-XR has no `default`, so a removed toggle is reset by inverting the `no`.
+    a_no = "interface eth1\n no shutdown\n"
+    b = "interface eth1\n"
+    assert list(reconcile(a_no, b, vendor="iosxr")) == ["interface eth1", " shutdown"]
+
+    a_pos = "interface eth1\n shutdown\n"
+    assert list(reconcile(a_pos, b, vendor="iosxr")) == ["interface eth1", " no shutdown"]
+
+
+def test_cisco_three_interface_scenario_with_indentation() -> None:
+    a = (
+        "interface Ethernet1/1\n  no shutdown\n"
+        "interface Ethernet1/2\n  no shutdown\n"
+        "interface Ethernet1/3\n  shutdown\n"
+    )
+    b = "interface Ethernet1/1\n  shutdown\ninterface Ethernet1/2\ninterface Ethernet1/3\n"
+    assert list(reconcile(a, b, vendor="nxos")) == [
+        "interface Ethernet1/1",
+        "  shutdown",
+        "interface Ethernet1/2",
+        "  default shutdown",
+        "interface Ethernet1/3",
+        "  default shutdown",
     ]
 
 
@@ -240,11 +292,41 @@ def test_junos_set_deactivate_add() -> None:
     ]
 
 
-def test_junos_set_deactivate_delete_strips_prefix() -> None:
+def test_junos_set_deactivate_delete_reactivates() -> None:
+    # The `deactivate` is gone in B, so the path goes back to active: invert the toggle to
+    # `activate` rather than deleting the underlying `set`.
     a = "set interfaces ge-0/0/0 unit 0\ndeactivate interfaces ge-0/0/0\n"
     b = "set interfaces ge-0/0/0 unit 0\n"
     assert list(reconcile(a, b, vendor="junos_set")) == [
-        "delete interfaces ge-0/0/0",
+        "activate interfaces ge-0/0/0",
+    ]
+
+
+def test_junos_set_deactivate_toggle_scenario() -> None:
+    # ge-0/0/0.0's deactivate disappears (re-activate); ge-0/0/1.0 gains a deactivate.
+    # The two deactivate lines share a leading path prefix but address different
+    # interfaces, so neither is mistaken for a value change of the other.
+    a = (
+        "set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 metric 1\n"
+        "deactivate protocols ospf area 0.0.0.0 interface ge-0/0/0.0\n"
+        "set protocols ospf area 0.0.0.0 interface ge-0/0/1.0 metric 1\n"
+    )
+    b = (
+        "set protocols ospf area 0.0.0.0 interface ge-0/0/0.0 metric 1\n"
+        "set protocols ospf area 0.0.0.0 interface ge-0/0/1.0 metric 1\n"
+        "deactivate protocols ospf area 0.0.0.0 interface ge-0/0/1.0\n"
+    )
+    assert list(reconcile(a, b, vendor="junos_set")) == [
+        "activate protocols ospf area 0.0.0.0 interface ge-0/0/0.0",
+        "deactivate protocols ospf area 0.0.0.0 interface ge-0/0/1.0",
+    ]
+
+
+def test_junos_set_activate_deactivate_transition_emits_new_state() -> None:
+    a = "set interfaces ge-0/0/0 unit 0\nactivate interfaces ge-0/0/0\n"
+    b = "set interfaces ge-0/0/0 unit 0\ndeactivate interfaces ge-0/0/0\n"
+    assert list(reconcile(a, b, vendor="junos_set")) == [
+        "deactivate interfaces ge-0/0/0",
     ]
 
 
@@ -277,7 +359,7 @@ def test_iterable_input_is_accepted() -> None:
     a_lines = ["interface eth1", "  description old"]
     b_lines = ["interface eth1", "  description new"]
     out = list(reconcile(a_lines, b_lines, vendor="nxos"))
-    assert out == ["interface eth1", "description new"]
+    assert out == ["interface eth1", "  description new"]
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +402,7 @@ def test_nxos_trailing_value_change_emits_new_value_only() -> None:
     b = "interface Ethernet1/1.1\n  ip ospf cost 1\n"
     assert list(reconcile(a, b, vendor="nxos")) == [
         "interface Ethernet1/1.1",
-        "ip ospf cost 1",
+        "  ip ospf cost 1",
     ]
 
 
@@ -332,6 +414,6 @@ def test_nxos_mid_token_change_still_deletes_then_adds() -> None:
     b = "interface eth1\n  ip address 2.2.2.2 255.255.255.0\n"
     assert list(reconcile(a, b, vendor="nxos")) == [
         "interface eth1",
-        "no ip address 1.1.1.1 255.255.255.0",
-        "ip address 2.2.2.2 255.255.255.0",
+        "  no ip address 1.1.1.1 255.255.255.0",
+        "  ip address 2.2.2.2 255.255.255.0",
     ]

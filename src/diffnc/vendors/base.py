@@ -46,6 +46,27 @@ class VendorParser(Protocol):
         """
         ...
 
+    def toggle_partners(self, a: str, b: str) -> bool:
+        """Return True if leaf lines *a* and *b* are the two faces of one toggle setting.
+
+        E.g. Cisco ``shutdown`` ↔ ``no shutdown``, or Junos ``activate X`` ↔
+        ``deactivate X``. When an A-only and a B-only leaf are partners the reconcile
+        engine treats the change as a state transition: it suppresses the delete of the
+        A-side and emits only the B-side value. Optional; defaults to ``False``.
+        """
+        ...
+
+    def is_toggle_state(self, line: str) -> bool:
+        """Return True if *line* is a toggle state that should be excluded from value-change
+        suppression.
+
+        Value-change suppression pairs A-only/B-only leaves that differ only in a trailing
+        token. Toggle states (Cisco ``no X`` / ``shutdown``, Junos ``activate``/
+        ``deactivate``) must not be matched that way — a different trailing path token means
+        a different setting, not a new value. Optional; defaults to ``False``.
+        """
+        ...
+
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
         """Translate :mod:`diffnc.reconcile` events into config-mode command lines.
 
@@ -67,6 +88,43 @@ def is_order_sensitive_for(parser: VendorParser, path: tuple[str, ...]) -> bool:
     if impl is None:
         return False
     return bool(impl(path))
+
+
+def toggle_partners_for(parser: VendorParser, a: str, b: str) -> bool:
+    """Resolve :meth:`VendorParser.toggle_partners` with a safe default of ``False``."""
+
+    impl = getattr(parser, "toggle_partners", None)
+    if impl is None:
+        return False
+    return bool(impl(a, b))
+
+
+def is_toggle_state_for(parser: VendorParser, line: str) -> bool:
+    """Resolve :meth:`VendorParser.is_toggle_state` with a safe default of ``False``."""
+
+    impl = getattr(parser, "is_toggle_state", None)
+    if impl is None:
+        return False
+    return bool(impl(line))
+
+
+def leaf_section_render_equivalent(
+    parser: VendorParser,
+    leaf_node: ConfigNode,
+    section_node: ConfigNode,
+    depth: int,
+) -> bool:
+    """Whether promoting *leaf_node* to an empty section is render-transparent.
+
+    True for indent-based vendors (Cisco/NX-OS), where ``render_leaf == render_open`` and
+    there is no closing line, so an empty ``interface eth1`` and a populated one share the
+    same header. False for brace/terminator vendors (Junos hierarchical), where a leaf
+    (``foo;``) is structurally distinct from a section (``foo { ... }``).
+    """
+
+    return parser.render_close(section_node, depth) is None and parser.render_leaf(
+        leaf_node, depth
+    ) == parser.render_open(section_node, depth)
 
 
 def render_subtree(
