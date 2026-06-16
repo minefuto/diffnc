@@ -22,6 +22,15 @@ class ConfigNode:
 
     line: str
     children: list[ConfigNode] = field(default_factory=list)
+    # line -> child node, kept in sync with ``children`` so same-name lookups stay O(1).
+    # Excluded from equality/repr: a node's identity is its line plus its children.
+    _index: dict[str, ConfigNode] = field(default_factory=dict, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Children supplied at construction (e.g. in tests) bypass ``add_child``; index them
+        # so lookups and merges behave identically to a tree built incrementally.
+        if self.children:
+            self._index = {child.line: child for child in self.children}
 
     @property
     def is_leaf(self) -> bool:
@@ -34,16 +43,41 @@ class ConfigNode:
         Indent-based vendors (e.g. NX-OS) can't tell at insertion time whether a line will
         end up being a leaf or a section, so the merge rule is intentionally simple: any
         sibling with the same ``line`` absorbs the new node's children. This collapses
-        repeated blocks (``interface eth1`` appearing twice) into one.
+        repeated blocks (``interface eth1`` appearing twice) into one. The ``_index`` map
+        makes the same-name check O(1) instead of scanning every sibling.
         """
 
-        for sibling in self.children:
-            if sibling.line == child.line:
-                for grandchild in child.children:
-                    sibling.add_child(grandchild)
-                return sibling
+        existing = self._index.get(child.line)
+        if existing is not None:
+            for grandchild in child.children:
+                existing.add_child(grandchild)
+            return existing
         self.children.append(child)
+        self._index[child.line] = child
         return child
+
+    def child_by_line(self, line: str) -> ConfigNode | None:
+        """Return the child whose ``line`` equals *line*, or ``None`` — O(1) via the index."""
+
+        return self._index.get(line)
+
+    def relabel_child(self, child: ConfigNode, new_line: str) -> None:
+        """Rename an existing *child* to *new_line* in place, keeping the index in sync.
+
+        Used by toggle collapsing (``X`` ↔ ``no X``, ``activate`` ↔ ``deactivate``) where the
+        last occurrence wins but the child's position must be preserved.
+        """
+
+        self._index.pop(child.line, None)
+        child.line = new_line
+        self._index[new_line] = child
+
+    def retain_children(self, surviving: list[ConfigNode]) -> None:
+        """Replace the child list (e.g. after a ``default`` / ``delete`` purge) and rebuild
+        the index from it."""
+
+        self.children = surviving
+        self._index = {child.line: child for child in surviving}
 
 
 @dataclass

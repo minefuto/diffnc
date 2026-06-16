@@ -14,18 +14,21 @@ session that's already in config mode (e.g. ``... | ssh device 'configure termin
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from diffnc.diff import _prepare
 from diffnc.ir import ConfigNode
 from diffnc.vendors.base import (
+    NO_TOGGLE_PARTNER,
     VendorParser,
     base_identity_for,
     is_order_sensitive_for,
     is_toggle_state_for,
     leaf_section_render_equivalent,
     render_subtree,
+    toggle_partner_of_for,
     toggle_partners_for,
 )
 
@@ -208,8 +211,16 @@ def _suppressed_deletes(
     """
 
     suppressed: set[str] = set()
+    # Toggle pass: a delete is suppressed when the leaf's toggle counterpart (e.g. `shutdown`
+    # for `no shutdown`) appears on the B side. Parsers exposing `toggle_partner_of` let us
+    # resolve this with an O(1) set lookup; others fall back to the generic pairwise scan.
+    b_lines = {b.line for b in b_only_leaves}
     for a in a_only_leaves:
-        if any(toggle_partners_for(parser, a.line, b.line) for b in b_only_leaves):
+        partner = toggle_partner_of_for(parser, a.line)
+        if partner is NO_TOGGLE_PARTNER:
+            if any(toggle_partners_for(parser, a.line, b.line) for b in b_only_leaves):
+                suppressed.add(a.line)
+        elif partner is not None and partner in b_lines:
             suppressed.add(a.line)
 
     val_a = [c for c in a_only_leaves if not is_toggle_state_for(parser, c.line)]
@@ -247,15 +258,22 @@ def _value_change_suppressed(
     so genuinely separate settings are not collapsed.
     """
 
-    used = [False] * len(b_only_leaves)
+    # Bucket B leaves by value head (in B order) so each A leaf finds its partner in O(1)
+    # instead of scanning the whole B side; popping from the front preserves the original
+    # "first unused matching B" pairing.
+    b_by_head: dict[str, deque[ConfigNode]] = {}
+    for b in b_only_leaves:
+        head = _value_head(b.line)
+        if head is not None:
+            b_by_head.setdefault(head, deque()).append(b)
+
     suppressed: set[str] = set()
     for a in a_only_leaves:
         head = _value_head(a.line)
         if head is None:
             continue
-        for i, b in enumerate(b_only_leaves):
-            if not used[i] and _value_head(b.line) == head:
-                used[i] = True
-                suppressed.add(a.line)
-                break
+        bucket = b_by_head.get(head)
+        if bucket:
+            bucket.popleft()
+            suppressed.add(a.line)
     return suppressed

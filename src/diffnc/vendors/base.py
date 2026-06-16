@@ -56,6 +56,17 @@ class VendorParser(Protocol):
         """
         ...
 
+    def toggle_partner_of(self, line: str) -> str | None:
+        """Return *line*'s single toggle counterpart, or ``None`` if it has none.
+
+        A faster companion to :meth:`toggle_partners`: instead of a symmetric predicate over
+        a pair, it yields the one line that would pair with *line* (``no X`` ↔ ``X``,
+        ``activate P`` ↔ ``deactivate P``). The reconcile engine uses it to detect suppressed
+        deletes with an O(1) set lookup; parsers that omit it fall back to the pairwise
+        :meth:`toggle_partners` scan. Optional.
+        """
+        ...
+
     def is_toggle_state(self, line: str) -> bool:
         """Return True if *line* is a toggle state that should be excluded from value-change
         suppression.
@@ -97,6 +108,26 @@ def toggle_partners_for(parser: VendorParser, a: str, b: str) -> bool:
     if impl is None:
         return False
     return bool(impl(a, b))
+
+
+NO_TOGGLE_PARTNER = object()
+
+
+def toggle_partner_of_for(parser: VendorParser, line: str) -> object:
+    """Resolve the optional ``VendorParser.toggle_partner_of(line)`` fast path.
+
+    Returns the single line that would be *line*'s toggle counterpart (``no X`` for ``X``,
+    ``deactivate P`` for ``activate P``, …), ``None`` when *line* has no partner, or the
+    sentinel :data:`NO_TOGGLE_PARTNER` when the parser doesn't implement the method — letting
+    callers fall back to the generic :func:`toggle_partners_for` pairwise check. The
+    single-partner form lets the reconcile engine resolve toggles with an O(1) set lookup
+    instead of an O(n²) pairwise scan.
+    """
+
+    impl = getattr(parser, "toggle_partner_of", None)
+    if impl is None:
+        return NO_TOGGLE_PARTNER
+    return impl(line)
 
 
 def is_toggle_state_for(parser: VendorParser, line: str) -> bool:
@@ -164,13 +195,30 @@ def render_subtree(
 ) -> list[str]:
     """Render *node* and all its descendants as display lines."""
 
-    if node.is_leaf:
-        return [parser.render_leaf(node, depth)]
+    out: list[str] = []
+    _render_into(parser, node, depth, out)
+    return out
 
-    lines = [parser.render_open(node, depth)]
+
+def _render_into(
+    parser: VendorParser,
+    node: ConfigNode,
+    depth: int,
+    out: list[str],
+) -> None:
+    """Append *node*'s rendered lines to *out*.
+
+    Accumulating into a single list avoids the repeated allocate-and-copy that
+    ``list.extend`` of per-child results incurs at every level of a deep subtree.
+    """
+
+    if node.is_leaf:
+        out.append(parser.render_leaf(node, depth))
+        return
+
+    out.append(parser.render_open(node, depth))
     for child in node.children:
-        lines.extend(render_subtree(parser, child, depth + 1))
+        _render_into(parser, child, depth + 1, out)
     close = parser.render_close(node, depth)
     if close is not None:
-        lines.append(close)
-    return lines
+        out.append(close)

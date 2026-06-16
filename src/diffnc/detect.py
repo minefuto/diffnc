@@ -11,21 +11,23 @@ import re
 
 from diffnc.errors import ParseError
 
-_JUNOS_TOP_KEYWORDS = (
-    "interfaces",
-    "system",
-    "routing-options",
-    "routing-instances",
-    "protocols",
-    "policy-options",
-    "firewall",
-    "security",
-    "groups",
-    "chassis",
-    "snmp",
-    "services",
-    "applications",
-    "forwarding-options",
+_JUNOS_TOP_KEYWORDS = frozenset(
+    {
+        "interfaces",
+        "system",
+        "routing-options",
+        "routing-instances",
+        "protocols",
+        "policy-options",
+        "firewall",
+        "security",
+        "groups",
+        "chassis",
+        "snmp",
+        "services",
+        "applications",
+        "forwarding-options",
+    }
 )
 
 _NXOS_INTERFACE_RE = re.compile(r"^interface Ethernet\d+/\d+")
@@ -152,12 +154,11 @@ def detect_vendor(text: str) -> str:
         return "junos_set"
 
     # Junos hierarchical: presence of braces and at least one Junos top-level keyword.
+    # The keyword check is just "first token is a Junos top-level word" — a line like
+    # ``interfaces {`` already has that word as its first token, so no separate brace-form
+    # scan (and no per-keyword inner loop) is needed.
     has_brace = any(s.endswith("{") or s == "}" for s in significant)
-    has_junos_kw = any(
-        s.split(" ", 1)[0] in _JUNOS_TOP_KEYWORDS or s.startswith(kw + " {")
-        for s in significant
-        for kw in _JUNOS_TOP_KEYWORDS
-    )
+    has_junos_kw = any(s.split(" ", 1)[0] in _JUNOS_TOP_KEYWORDS for s in significant)
     if has_brace and has_junos_kw:
         return "junos"
 

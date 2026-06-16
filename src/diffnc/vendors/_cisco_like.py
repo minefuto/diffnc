@@ -135,6 +135,11 @@ class CiscoLikeParser:
 
         return a == f"no {b}" or b == f"no {a}"
 
+    def toggle_partner_of(self, line: str) -> str | None:
+        """The single toggle counterpart of *line*: ``no X`` for ``X`` and vice versa."""
+
+        return line[3:] if line.startswith("no ") else f"no {line}"
+
     def is_toggle_state(self, line: str) -> bool:
         """A ``no``-prefixed line or a bare positive boolean (``shutdown``)."""
 
@@ -224,12 +229,12 @@ def _apply_no_toggle(parent: ConfigNode, line: str) -> bool:
 
     base = line[3:] if line.startswith("no ") else line
     no_form = f"no {base}"
-    for child in parent.children:
-        if child.is_leaf and child.line in (base, no_form):
-            child.line = line  # last toggle wins; position preserved
-            return True
+    existing = parent.child_by_line(base) or parent.child_by_line(no_form)
+    if existing is not None and existing.is_leaf:
+        parent.relabel_child(existing, line)  # last toggle wins; position preserved
+        return True
     if line.startswith("no "):
-        parent.children.append(ConfigNode(line=line))
+        parent.add_child(ConfigNode(line=line))
         return True
     return False
 
@@ -250,7 +255,7 @@ def _apply_default(parent: ConfigNode, default_path: str) -> None:
         if child.line in exact or child.line.startswith(prefixes):
             continue
         surviving.append(child)
-    parent.children = surviving
+    parent.retain_children(surviving)
 
 
 def _leading_spaces(line: str) -> int:

@@ -17,6 +17,7 @@ lines, joined internally) for parity with :mod:`difflib`.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -345,43 +346,100 @@ def _leading_token(line: str) -> str:
     return parts[0] if parts else ""
 
 
+def _value_head(line: str) -> str | None:
+    """The part of *line* before its trailing token, or ``None`` for a single-token line.
+
+    ``"ip ospf cost 10"`` → ``"ip ospf cost"``; ``"shutdown"`` → ``None``. Two leaves with the
+    same head differ only in their trailing value — i.e. the same setting reassigned.
+    """
+
+    head, sep, _ = line.rpartition(" ")
+    return head if sep else None
+
+
 def _pair_changed_leaves(
     a_only: list[tuple[int, ConfigNode]],
     b_only: list[tuple[int, ConfigNode]],
 ) -> tuple[dict[int, ConfigNode], set[int]]:
     """Greedily pair A-only / B-only leaves that differ only in value.
 
-    A pair is a candidate when either the raw-line ``difflib`` ratio clears
-    :data:`_SIMILARITY_CUTOFF`, or the two leaves share the same leading command token
-    and the ratio clears the looser :data:`_TOKEN_SHARE_CUTOFF`. The latter rescues short
-    settings with a large value change (``vlan 1`` → ``vlan 1,100,200,300``) whose char
-    ratio dips below the primary cutoff. Pairs are chosen highest-ratio first and each side
-    is used at most once, so genuine high-ratio matches win before the looser fallbacks.
+    Matching runs in two passes so it stays near-linear on large configs:
+
+    * **Phase 1 — exact value head.** Leaves that share a :func:`_value_head` (same setting,
+      new trailing value, e.g. ``ip route … <next-hop>`` or ``mtu <n>``) are paired directly
+      via a hash bucket. This is the overwhelmingly common case and the one that used to blow
+      up: thousands of same-prefix leaves no longer need an O(n²) ``SequenceMatcher`` sweep.
+    * **Phase 2 — ratio fallback.** Whatever stays unpaired (leaves whose *prefix* changed,
+      e.g. ``description uplink`` → ``description uplink-to-spine``, or short settings such as
+      ``vlan 1`` → ``vlan 1,100,200,300``) is matched within shared leading-token buckets by
+      ``difflib`` ratio, highest first, each side used once. The reused matcher is gated by the
+      cheap ``real_quick_ratio`` / ``quick_ratio`` upper bounds (the prefilter
+      :func:`difflib.get_close_matches` uses). The residual is small, so this stays cheap.
+
+    Restricting Phase 2 to a shared leading token (and Phase 1 to a shared head) is what makes
+    a value change meaningful; cross-token pairs — rare even under the old all-pairs scan — are
+    intentionally not formed.
 
     Returns ``(a_child_index -> paired b node, set of paired b child indices)`` so the
     caller can emit the ``+`` next to its ``-`` and suppress it elsewhere.
     """
 
-    candidates: list[tuple[float, int, int]] = []
-    for ai, (_, a_node) in enumerate(a_only):
-        for bi, (_, b_node) in enumerate(b_only):
-            ratio = SequenceMatcher(None, a_node.line, b_node.line).ratio()
-            shares_token = _leading_token(a_node.line) == _leading_token(b_node.line)
-            if ratio >= _SIMILARITY_CUTOFF or (shares_token and ratio >= _TOKEN_SHARE_CUTOFF):
-                candidates.append((ratio, ai, bi))
-    candidates.sort(key=lambda t: t[0], reverse=True)
-
     used_a: set[int] = set()
     used_b: set[int] = set()
     a_index_to_b_node: dict[int, ConfigNode] = {}
     paired_b_positions: set[int] = set()
-    for _, ai, bi in candidates:
-        if ai in used_a or bi in used_b:
-            continue
+
+    def _commit(ai: int, bi: int) -> None:
         used_a.add(ai)
         used_b.add(bi)
         a_index_to_b_node[a_only[ai][0]] = b_only[bi][1]
         paired_b_positions.add(b_only[bi][0])
+
+    # Phase 1: pair leaves sharing an exact value head (in B order, one-to-one).
+    b_by_head: dict[str, deque[int]] = {}
+    for bi, (_, b_node) in enumerate(b_only):
+        head = _value_head(b_node.line)
+        if head is not None:
+            b_by_head.setdefault(head, deque()).append(bi)
+    for ai, (_, a_node) in enumerate(a_only):
+        head = _value_head(a_node.line)
+        if head is None:
+            continue
+        bucket = b_by_head.get(head)
+        if bucket:
+            _commit(ai, bucket.popleft())
+
+    # Phase 2: ratio-match the residual within shared leading-token buckets.
+    rem_b_by_token: dict[str, list[int]] = {}
+    for bi, (_, b_node) in enumerate(b_only):
+        if bi not in used_b:
+            rem_b_by_token.setdefault(_leading_token(b_node.line), []).append(bi)
+    if not rem_b_by_token:
+        return a_index_to_b_node, paired_b_positions
+
+    candidates: list[tuple[float, int, int]] = []
+    matcher = SequenceMatcher()  # autojunk left at difflib's default, as the old all-pairs scan did
+    for ai, (_, a_node) in enumerate(a_only):
+        if ai in used_a:
+            continue
+        bucket = rem_b_by_token.get(_leading_token(a_node.line))
+        if not bucket:
+            continue
+        matcher.set_seq2(a_node.line)
+        for bi in bucket:
+            matcher.set_seq1(b_only[bi][1].line)
+            if (
+                matcher.real_quick_ratio() < _TOKEN_SHARE_CUTOFF
+                or matcher.quick_ratio() < _TOKEN_SHARE_CUTOFF
+            ):
+                continue
+            ratio = matcher.ratio()
+            if ratio >= _TOKEN_SHARE_CUTOFF:
+                candidates.append((ratio, ai, bi))
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    for _, ai, bi in candidates:
+        if ai not in used_a and bi not in used_b:
+            _commit(ai, bi)
     return a_index_to_b_node, paired_b_positions
 
 

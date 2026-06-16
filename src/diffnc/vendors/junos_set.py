@@ -99,6 +99,15 @@ class _JunosSetParser:
         pa = _toggle_path(a)
         return pa is not None and pa == _toggle_path(b) and a != b
 
+    def toggle_partner_of(self, line: str) -> str | None:
+        """The single toggle counterpart: ``activate P`` ↔ ``deactivate P`` (else ``None``)."""
+
+        if line.startswith("activate "):
+            return f"deactivate {line[len('activate ') :]}"
+        if line.startswith("deactivate "):
+            return f"activate {line[len('deactivate ') :]}"
+        return None
+
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
         from diffnc.reconcile import ReconcileAdd, ReconcileDelete
 
@@ -118,11 +127,11 @@ def _apply_state_toggle(root: ConfigNode, path: str, new_line: str) -> None:
 
     activate_line = f"activate {path}"
     deactivate_line = f"deactivate {path}"
-    for child in root.children:
-        if child.line == activate_line or child.line == deactivate_line:
-            child.line = new_line
-            return
-    root.children.append(ConfigNode(line=new_line))
+    existing = root.child_by_line(activate_line) or root.child_by_line(deactivate_line)
+    if existing is not None:
+        root.relabel_child(existing, new_line)
+        return
+    root.add_child(ConfigNode(line=new_line))
 
 
 def _toggle_path(line: str) -> str | None:
@@ -165,7 +174,7 @@ def _apply_delete(root: ConfigNode, delete_path: str) -> None:
         if path == delete_path or path.startswith(boundary):
             continue
         surviving.append(child)
-    root.children = surviving
+    root.retain_children(surviving)
 
 
 def _strip_line_comment(line: str) -> str:
