@@ -71,7 +71,7 @@ for line in reconcile(a, b):
 Output is config-mode commands only — no `configure terminal` / `end` / `commit` wrappers. Lines are indented to mirror the section hierarchy (using each vendor's own indent unit), so the result reads like the source config; flat vendors such as Junos set form emit no indentation. Pipe through your own session manager.
 
 * **Cisco-like (NX-OS / IOS / IOS-XE / IOS-XR / EOS):** emits section navigation plus `<line>` for adds and `no <line>` for deletes. `X` / `no X` toggles are tracked as state: a transition (e.g. `no shutdown` → `shutdown`) emits just the new value, while a *removed* toggle resets to default — `default <cmd>` on vendors that support it (IOS / IOS-XE / NX-OS / EOS) and the inverted `no` on IOS-XR.
-* **Junos hierarchical:** emits flat `set <path>` and `delete <path>` lines.
+* **Junos hierarchical:** emits flat `set <path>` and `delete <path>` lines. A node whose only change is its inactive state (`inactive: <line>`) emits `activate <path>` / `deactivate <path>` instead of a `delete`/`set` pair.
 * **Junos set:** emits `<line>` verbatim for adds and `delete <path>` (with the `set ` prefix stripped) for deletes. `activate` / `deactivate` are tracked as state: a removed toggle inverts to its counterpart (`deactivate X` → `activate X`) rather than deleting the underlying `set`.
 * **Order-sensitive sections** (ACL, `policy-map`, Junos `firewall filter` / `policy-statement` terms): on any change, the entire section is deleted and recreated from *B* — partial in-place edits are not attempted.
 
@@ -218,6 +218,33 @@ Example: a reorder of one term plus a content change in another term
  }
 ```
 
+## Junos inactive/active toggles
+
+When a Junos hierarchical node only flips its `inactive:` state (the node itself and its subtree are otherwise identical), the diff does not re-emit the whole subtree as a `-`/`+` pair. Instead it pairs the two states as one node and marks the new state with a `!`:
+
+* A deactivated node keeps its literal `inactive:` prefix.
+* A reactivated node has no marker on the B side, so a synthetic `activate:` is shown to make the direction visible.
+
+```diff
+ system {
+!    inactive: host-name foo;
+ }
+```
+
+If the toggled section also has real changes inside it, the section header is marked `!` and expanded so the inner `-`/`+` (or nested `!`) lines still surface:
+
+```diff
+ protocols {
+!    inactive: ospf {
+         area 0.0.0.0 {
+!            activate: interface ge-0/0/0.0;
+         }
+     }
+ }
+```
+
+In `reconcile`, the same toggles emit `activate <path>` / `deactivate <path>` (see the reconcile section above).
+
 ### Customizing the behavior for a new vendor
 
 The `VendorParser` protocol exposes `is_order_sensitive(path: tuple[str, ...]) -> bool`. `path` is the tuple of `line` values from the root down to "the parent node whose children are being compared." Returning `True` makes the children compared positionally via `SequenceMatcher`; returning `False` (the default) falls back to set-style key comparison. If you're subclassing the Cisco family, the shortest path is to pass `order_sensitive_predicate` to `CiscoLikeParser(...)`.
@@ -244,8 +271,9 @@ Create a new module under `src/diffnc/vendors/`, expose an implementation of the
 * `render_close(node, depth) -> str | None`
 * `render_leaf(node, depth) -> str`
 * `is_order_sensitive(path) -> bool` (optional; treated as always `False` if not implemented. See the "How order is handled" section.)
-* `render_reconcile(events) -> Iterator[str]` (optional; required only to support `reconcile`. Receives a sequence of `ReconcileAdd` / `ReconcileDelete` / `ReconcileRecreate` events from `diffnc.reconcile` and yields the corresponding CLI lines.)
+* `render_reconcile(events) -> Iterator[str]` (optional; required only to support `reconcile`. Receives a sequence of `ReconcileAdd` / `ReconcileDelete` / `ReconcileRecreate` / `ReconcileToggle` events from `diffnc.reconcile` and yields the corresponding CLI lines.)
 * `toggle_partners(a, b) -> bool` / `is_toggle_state(line) -> bool` (optional; both default to `False`. Let `reconcile` recognise paired toggle states — e.g. `X` ↔ `no X`, `activate` ↔ `deactivate` — so a transition emits only the new value and a removed toggle is excluded from value-change matching.)
+* `base_identity(line) -> str` / `render_toggle_line(b_line, depth, *, became_active, kind) -> str` (optional; only needed for vendors with an inactive-state prefix such as Junos hierarchical `inactive:`. `base_identity` strips the prefix so a (de)activated node matches its active form as one node in two states; when that match's lines still differ, the diff/reconcile engines treat it as a toggle and call `render_toggle_line` to render the `!`-marked line — `kind` is `"leaf"`, `"section_open"` or `"section_collapsed"` — or emit a `ReconcileToggle`.)
 
 ## License
 

@@ -141,10 +141,19 @@ class CiscoLikeParser:
         return line.startswith("no ") or line in _POSITIVE_BOOLEANS
 
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
-        from diffnc.reconcile import ReconcileAdd, ReconcileDelete, ReconcileRecreate
+        from diffnc.reconcile import (
+            ReconcileAdd,
+            ReconcileDelete,
+            ReconcileRecreate,
+            ReconcileToggle,
+        )
 
         last_path: tuple[str, ...] | None = None
         for ev in events:
+            if isinstance(ev, ReconcileToggle):
+                # Cisco-like vendors have no ``inactive:``-style prefix (their base identity is
+                # the line itself), so a toggle event is never produced for them. Guard anyway.
+                continue
             if isinstance(ev, ReconcileRecreate):
                 parents = ev.section_path[:-1]
                 section_header = ev.section_path[-1]

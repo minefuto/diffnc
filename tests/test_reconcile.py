@@ -222,6 +222,35 @@ def test_junos_value_change_emits_set_only() -> None:
     assert list(reconcile(a, b, vendor="junos")) == ["set system host-name router-b"]
 
 
+def test_junos_hier_deactivate_section_emits_deactivate() -> None:
+    a = "protocols {\n    ospf {\n        area 0.0.0.0;\n    }\n}\n"
+    b = "protocols {\n    inactive: ospf {\n        area 0.0.0.0;\n    }\n}\n"
+    assert list(reconcile(a, b, vendor="junos")) == ["deactivate protocols ospf"]
+
+
+def test_junos_hier_activate_leaf_emits_activate() -> None:
+    a = "system {\n    inactive: host-name foo;\n}\n"
+    b = "system {\n    host-name foo;\n}\n"
+    assert list(reconcile(a, b, vendor="junos")) == ["activate system host-name foo"]
+
+
+def test_junos_hier_inactive_nested_toggle_scenario() -> None:
+    # ospf deactivated, the interface inside it reactivated: a deactivate for the section
+    # followed by an activate for the leaf, both with their full base-identity paths.
+    a = (
+        "protocols {\n    ospf {\n        area 0.0.0.0 {\n"
+        "            inactive: interface ge-0/0/0.0;\n        }\n    }\n}\n"
+    )
+    b = (
+        "protocols {\n    inactive: ospf {\n        area 0.0.0.0 {\n"
+        "            interface ge-0/0/0.0;\n        }\n    }\n}\n"
+    )
+    assert list(reconcile(a, b, vendor="junos")) == [
+        "deactivate protocols ospf",
+        "activate protocols ospf area 0.0.0.0 interface ge-0/0/0.0",
+    ]
+
+
 def test_junos_firewall_filter_recreates_on_change() -> None:
     a = (
         "firewall {\n"

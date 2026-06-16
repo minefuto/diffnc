@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 INDENT_UNIT = 4
 
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_INACTIVE_PREFIX = "inactive: "
 
 
 @dataclass
@@ -86,6 +87,29 @@ class _JunosParser:
     def render_leaf(self, node: ConfigNode, depth: int) -> str:
         return f"{_pad(depth)}{node.line};"
 
+    def base_identity(self, line: str) -> str:
+        """Strip the ``inactive: `` prefix so a (de)activated node matches its active form."""
+
+        if line.startswith(_INACTIVE_PREFIX):
+            return line[len(_INACTIVE_PREFIX) :]
+        return line
+
+    def render_toggle_line(self, b_line: str, depth: int, *, became_active: bool, kind: str) -> str:
+        """Render a node whose only change is its inactive state.
+
+        A reactivated node has no literal marker in *b_line* (the prefix is gone), so a
+        synthetic ``activate: `` is prepended to make the direction visible; a deactivated
+        node keeps the literal ``inactive: `` already present on *b_line*.
+        """
+
+        text = f"activate: {b_line}" if became_active else b_line
+        pad = _pad(depth)
+        if kind == "leaf":
+            return f"{pad}{text};"
+        if kind == "section_open":
+            return f"{pad}{text} {{"
+        return f"{pad}{text}"  # section_collapsed
+
     def is_order_sensitive(self, path: tuple[str, ...]) -> bool:
         """Term order matters inside firewall filters and policy-statements.
 
@@ -113,9 +137,19 @@ class _JunosParser:
         )
 
     def render_reconcile(self, events: Iterable[ReconcileEvent]) -> Iterator[str]:
-        from diffnc.reconcile import ReconcileAdd, ReconcileDelete, ReconcileRecreate
+        from diffnc.reconcile import (
+            ReconcileAdd,
+            ReconcileDelete,
+            ReconcileRecreate,
+            ReconcileToggle,
+        )
 
         for ev in events:
+            if isinstance(ev, ReconcileToggle):
+                verb = "activate" if ev.activate else "deactivate"
+                yield f"{verb} {' '.join(ev.node_path)}"
+                continue
+
             if isinstance(ev, ReconcileRecreate):
                 section = " ".join(ev.section_path)
                 yield f"delete {section}"

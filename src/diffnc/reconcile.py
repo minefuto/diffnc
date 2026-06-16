@@ -21,6 +21,7 @@ from diffnc.diff import _prepare
 from diffnc.ir import ConfigNode
 from diffnc.vendors.base import (
     VendorParser,
+    base_identity_for,
     is_order_sensitive_for,
     is_toggle_state_for,
     leaf_section_render_equivalent,
@@ -58,7 +59,20 @@ class ReconcileRecreate:
     new_node: ConfigNode
 
 
-ReconcileEvent = ReconcileAdd | ReconcileDelete | ReconcileRecreate
+@dataclass(frozen=True)
+class ReconcileToggle:
+    """A node present on both sides that only changed its (in)active state.
+
+    ``node_path`` is the full path (base identities, toggle prefixes stripped) to the toggled
+    node. ``activate`` is True when it went inactive → active (emit ``activate``), False when
+    it went active → inactive (emit ``deactivate``).
+    """
+
+    node_path: tuple[str, ...]
+    activate: bool
+
+
+ReconcileEvent = ReconcileAdd | ReconcileDelete | ReconcileRecreate | ReconcileToggle
 
 
 def reconcile(
@@ -107,15 +121,26 @@ def _collect_events(
     order-sensitive subsection into a single :class:`ReconcileRecreate`.
     """
 
-    b_by_line = {c.line: c for c in node_b.children}
-    a_by_line = {c.line: c for c in node_a.children}
+    # Children are matched by base identity (toggle prefixes stripped) so that an
+    # (de)activated node pairs with its active form instead of looking unrelated.
+    a_by_key = {base_identity_for(parser, c.line): c for c in node_a.children}
+    b_by_key = {base_identity_for(parser, c.line): c for c in node_b.children}
 
-    a_only_leaves = [c for c in node_a.children if c.line not in b_by_line and c.is_leaf]
-    b_only_leaves = [c for c in node_b.children if c.line not in a_by_line and c.is_leaf]
+    a_only_leaves = [
+        c
+        for c in node_a.children
+        if c.is_leaf and base_identity_for(parser, c.line) not in b_by_key
+    ]
+    b_only_leaves = [
+        c
+        for c in node_b.children
+        if c.is_leaf and base_identity_for(parser, c.line) not in a_by_key
+    ]
     suppressed = _suppressed_deletes(parser, a_only_leaves, b_only_leaves)
 
     for child_a in node_a.children:
-        child_b = b_by_line.get(child_a.line)
+        key_a = base_identity_for(parser, child_a.line)
+        child_b = b_by_key.get(key_a)
         if child_b is None:
             # Suppressed: the A leaf is overwritten by a B-side value change, or it is one
             # face of a toggle whose new state B emits directly (e.g. `no shutdown` ->
@@ -123,6 +148,13 @@ def _collect_events(
             if not (child_a.is_leaf and child_a.line in suppressed):
                 yield ReconcileDelete(parent_path, child_a)
             continue
+
+        # Same node, only its (in)active state flipped: emit a single activate/deactivate.
+        # For a toggled section we still recurse so inner toggles/changes also surface.
+        if child_a.line != child_b.line and child_a.is_leaf == child_b.is_leaf:
+            became_active = child_b.line == key_a
+            yield ReconcileToggle((*parent_path, key_a), became_active)
+
         if child_a.is_leaf and child_b.is_leaf:
             continue
         if child_a.is_leaf != child_b.is_leaf and not _section_leaf_equivalent(
@@ -135,7 +167,7 @@ def _collect_events(
             yield ReconcileAdd(parent_path, child_b)
             continue
 
-        next_path = (*parent_path, child_a.line)
+        next_path = (*parent_path, key_a)
         if is_order_sensitive_for(parser, next_path):
             if not _subtrees_equal(parser, child_a, child_b):
                 yield ReconcileRecreate(next_path, child_b)
@@ -144,7 +176,7 @@ def _collect_events(
         yield from _collect_events(parser, child_a, child_b, next_path)
 
     for child_b in node_b.children:
-        if child_b.line not in a_by_line:
+        if base_identity_for(parser, child_b.line) not in a_by_key:
             yield ReconcileAdd(parent_path, child_b)
 
 

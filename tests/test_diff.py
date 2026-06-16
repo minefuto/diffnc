@@ -137,13 +137,62 @@ def test_junos_set_activate_deactivate_diff_as_distinct_lines() -> None:
     assert "+deactivate interfaces ge-0/0/0 unit 0\n" in out
 
 
-def test_junos_hier_inactive_diff_as_distinct_lines() -> None:
+def test_junos_hier_inactive_section_identical_subtree_collapses() -> None:
+    # Only the inactive state of the section changed; its subtree is identical, so the diff
+    # collapses to a single ``!`` line with no braces instead of re-emitting the subtree.
     a = "interfaces {\n    ge-0/0/0 {\n        unit 0;\n    }\n}\n"
     b = "interfaces {\n    inactive: ge-0/0/0 {\n        unit 0;\n    }\n}\n"
     out = "".join(unified_diff(a, b, lineterm="\n"))
-    assert " interfaces {\n" in out
-    assert "-    ge-0/0/0 {\n" in out
-    assert "+    inactive: ge-0/0/0 {\n" in out
+    assert out == " interfaces {\n!    inactive: ge-0/0/0\n }\n"
+
+
+def test_junos_hier_inactive_leaf_deactivated() -> None:
+    a = "system {\n    host-name foo;\n}\n"
+    b = "system {\n    inactive: host-name foo;\n}\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == " system {\n!    inactive: host-name foo;\n }\n"
+
+
+def test_junos_hier_inactive_leaf_activated_shows_activate_marker() -> None:
+    # Reactivation has no literal marker on the B line, so a synthetic ``activate:`` is shown.
+    a = "system {\n    inactive: host-name foo;\n}\n"
+    b = "system {\n    host-name foo;\n}\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == " system {\n!    activate: host-name foo;\n }\n"
+
+
+def test_junos_hier_inactive_section_with_inner_change_expands() -> None:
+    # ospf deactivated while the interface inside it is reactivated: the toggled section
+    # header is marked ``!`` and expanded, with context lines around the inner toggle.
+    a = (
+        "protocols {\n    ospf {\n        area 0.0.0.0 {\n"
+        "            inactive: interface ge-0/0/0.0;\n        }\n    }\n}\n"
+    )
+    b = (
+        "protocols {\n    inactive: ospf {\n        area 0.0.0.0 {\n"
+        "            interface ge-0/0/0.0;\n        }\n    }\n}\n"
+    )
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == (
+        " protocols {\n"
+        "!    inactive: ospf {\n"
+        "         area 0.0.0.0 {\n"
+        "!            activate: interface ge-0/0/0.0;\n"
+        "         }\n"
+        "     }\n"
+        " }\n"
+    )
+
+
+def test_junos_hier_inactive_with_real_subtree_change_still_diffs() -> None:
+    # When the subtree genuinely differs as well, the section header toggle is marked ``!``
+    # and the real leaf change still shows as ``-``/``+``.
+    a = "interfaces {\n    ge-0/0/0 {\n        unit 0;\n    }\n}\n"
+    b = "interfaces {\n    inactive: ge-0/0/0 {\n        unit 1;\n    }\n}\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == (
+        " interfaces {\n!    inactive: ge-0/0/0 {\n-        unit 0;\n+        unit 1;\n     }\n }\n"
+    )
 
 
 def test_junos_set_delete_changes_effective_diff() -> None:

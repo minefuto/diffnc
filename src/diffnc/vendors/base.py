@@ -17,8 +17,8 @@ and registering it via :mod:`diffnc.vendors`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from collections.abc import Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 from diffnc.ir import ConfigNode, ConfigTree
 
@@ -106,6 +106,36 @@ def is_toggle_state_for(parser: VendorParser, line: str) -> bool:
     if impl is None:
         return False
     return bool(impl(line))
+
+
+def base_identity_for(parser: VendorParser, line: str) -> str:
+    """Return *line*'s matching key with any vendor toggle prefix stripped.
+
+    A parser may expose an optional ``base_identity(line)`` method to fold a toggled node
+    (e.g. Junos ``inactive: ospf``) onto its active form (``ospf``) so the diff/reconcile
+    engines pair them as one node in two states. Defaults to the line itself, so vendors
+    with no such prefix never produce a toggle.
+    """
+
+    impl = getattr(parser, "base_identity", None)
+    if impl is None:
+        return line
+    return impl(line)
+
+
+def render_toggle_line_for(
+    parser: VendorParser, b_line: str, depth: int, *, became_active: bool, kind: str
+) -> str:
+    """Render a node whose only change is its (in)active state.
+
+    Delegates to the parser's optional ``render_toggle_line`` method. Only ever invoked once
+    :func:`base_identity_for` has detected a toggle, which a vendor only does when it also
+    implements this method (Junos hierarchical). *kind* is ``"leaf"``, ``"section_open"`` or
+    ``"section_collapsed"``.
+    """
+
+    impl = cast("Callable[..., str]", getattr(parser, "render_toggle_line", None))
+    return impl(b_line, depth, became_active=became_active, kind=kind)
 
 
 def leaf_section_render_equivalent(

@@ -27,9 +27,11 @@ from diffnc.errors import VendorMismatchError
 from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import (
     VendorParser,
+    base_identity_for,
     is_order_sensitive_for,
     leaf_section_render_equivalent,
     render_subtree,
+    render_toggle_line_for,
 )
 
 _SIMILARITY_CUTOFF = 0.6  # difflib.get_close_matches の既定値に合わせる
@@ -292,44 +294,47 @@ def _diff_children_unordered(
 
     a_children = node_a.children
     b_children = node_b.children
-    b_by_line = {child.line: child for child in b_children}
-    common = {child.line for child in a_children} & set(b_by_line)
-    b_match_index = {
-        child.line: idx for idx, child in enumerate(b_children) if child.line in common
-    }
+    # Match on base identity (toggle prefixes stripped) so an (de)activated node pairs with
+    # its active form; a base-key match whose lines still differ is an inactive toggle.
+    a_keys = [base_identity_for(parser, child.line) for child in a_children]
+    b_keys = [base_identity_for(parser, child.line) for child in b_children]
+    b_by_key = dict(zip(b_keys, b_children, strict=True))
+    common = set(a_keys) & set(b_by_key)
+    b_match_index = {key: idx for idx, key in enumerate(b_keys) if key in common}
 
     a_only_leaves = [
         (idx, child)
         for idx, child in enumerate(a_children)
-        if child.line not in common and child.is_leaf
+        if a_keys[idx] not in common and child.is_leaf
     ]
     b_only_leaves = [
         (idx, child)
         for idx, child in enumerate(b_children)
-        if child.line not in common and child.is_leaf
+        if b_keys[idx] not in common and child.is_leaf
     ]
     a_index_to_b_node, paired_b_positions = _pair_changed_leaves(a_only_leaves, b_only_leaves)
 
     b_pointer = 0
     for idx, child_a in enumerate(a_children):
-        if child_a.line not in common:
+        key_a = a_keys[idx]
+        if key_a not in common:
             yield from _emit_one_side(parser, child_a, depth, "-")
             partner = a_index_to_b_node.get(idx)
             if partner is not None:
                 yield from _emit_one_side(parser, partner, depth, "+")
             continue
-        b_pos = b_match_index[child_a.line]
+        b_pos = b_match_index[key_a]
         if b_pos >= b_pointer:
             for k in range(b_pointer, b_pos):
                 child_b = b_children[k]
-                if child_b.line not in common and k not in paired_b_positions:
+                if b_keys[k] not in common and k not in paired_b_positions:
                     yield from _emit_one_side(parser, child_b, depth, "+")
             b_pointer = b_pos + 1
-        yield from _equal_pair(parser, child_a, b_by_line[child_a.line], depth, hide_equal, path)
+        yield from _equal_pair(parser, child_a, b_by_key[key_a], depth, hide_equal, path)
 
     for k in range(b_pointer, len(b_children)):
         child_b = b_children[k]
-        if child_b.line not in common and k not in paired_b_positions:
+        if b_keys[k] not in common and k not in paired_b_positions:
             yield from _emit_one_side(parser, child_b, depth, "+")
 
 
@@ -391,7 +396,21 @@ def _equal_pair(
     a_is_section = not child_a.is_leaf
     b_is_section = not child_b.is_leaf
 
+    # Matched by base identity; if the raw lines still differ it is an inactive toggle.
+    key = base_identity_for(parser, child_a.line)
+    toggled = child_a.line != child_b.line
+    became_active = child_b.line == key
+
     if not a_is_section and not b_is_section:
+        if toggled:
+            # Only the (in)active state changed; show the new state marked ``!``.
+            yield _Event(
+                "!",
+                render_toggle_line_for(
+                    parser, child_b.line, depth, became_active=became_active, kind="leaf"
+                ),
+            )
+            return
         # Equal leaf at this level. Suppress in the compact view, show as context in ndiff.
         if not hide_equal:
             yield _Event(" ", parser.render_leaf(child_a, depth))
@@ -408,8 +427,8 @@ def _equal_pair(
         # Indent-based vendors: the "leaf" is just an empty section with the same header,
         # so fall through and diff their children (the empty side yields all ``-``/``+``).
 
-    # Both are sections with matching headers. Diff their children; only surface the section
-    # header if any descendant differs (compact mode) or always (ndiff).
+    # Both are sections with matching headers. Diff their children; surface the section header
+    # if any descendant differs, if its own state toggled (compact mode), or always (ndiff).
     inner = list(
         _diff_children(
             parser,
@@ -417,15 +436,31 @@ def _equal_pair(
             child_b,
             depth + 1,
             hide_equal=hide_equal,
-            path=(*path, child_a.line),
+            path=(*path, key),
         )
     )
     has_change = any(ev.op != " " for ev in inner)
 
-    if not has_change and hide_equal:
+    if not has_change and not toggled and hide_equal:
         return
 
-    yield _Event(" ", parser.render_open(child_a, depth))
+    if toggled and not has_change and hide_equal:
+        # Section state flipped but its subtree is identical: collapse to one marked line.
+        yield _Event(
+            "!",
+            render_toggle_line_for(
+                parser, child_b.line, depth, became_active=became_active, kind="section_collapsed"
+            ),
+        )
+        return
+
+    if toggled:
+        header = render_toggle_line_for(
+            parser, child_b.line, depth, became_active=became_active, kind="section_open"
+        )
+        yield _Event("!", header)
+    else:
+        yield _Event(" ", parser.render_open(child_a, depth))
     yield from inner
     close = parser.render_close(child_a, depth)
     if close is not None:
