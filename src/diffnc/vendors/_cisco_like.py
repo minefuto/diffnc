@@ -220,21 +220,24 @@ def _negate(line: str) -> str:
 def _apply_no_toggle(parent: ConfigNode, line: str) -> bool:
     """Collapse ``line`` with its ``X`` / ``no X`` toggle partner under ``parent``.
 
-    If a sibling leaf is the toggle partner (same base, with or without a leading ``no``),
-    replace it in place so the last occurrence wins while keeping its position. A lone
-    ``no X`` with no partner is recorded as a leaf. Returns ``True`` when ``line`` was
-    handled as a toggle; ``False`` means the caller should add it as an ordinary node
-    (which may turn out to be a section).
+    Looks only for the *opposite-polarity* partner (``no X`` pairs with ``X`` and vice
+    versa); a sibling leaf partner is replaced in place so the last occurrence wins while
+    keeping its position. A lone ``no X`` with no partner is recorded as a leaf. Returns
+    ``True`` when ``line`` was handled as a toggle; ``False`` means the caller should add
+    it as an ordinary node (which may turn out to be a section).
+
+    A same-polarity duplicate (a re-declared ``X``, e.g. an ``interface`` block stated
+    twice) is *not* a toggle: it returns ``False`` so the caller's :meth:`add_child` merges
+    it and keeps it on the indent stack, letting the re-declared section adopt its children.
     """
 
-    base = line[3:] if line.startswith("no ") else line
-    no_form = f"no {base}"
-    existing = parent.child_by_line(base) or parent.child_by_line(no_form)
+    partner = line[3:] if line.startswith("no ") else f"no {line}"
+    existing = parent.child_by_line(partner)
     if existing is not None and existing.is_leaf:
         parent.relabel_child(existing, line)  # last toggle wins; position preserved
         return True
     if line.startswith("no "):
-        parent.add_child(ConfigNode(line=line))
+        parent.add_child(ConfigNode(line=line))  # lone "no X" directive (always a leaf)
         return True
     return False
 

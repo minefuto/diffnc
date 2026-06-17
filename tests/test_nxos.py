@@ -29,6 +29,17 @@ def test_parse_merges_duplicate_blocks() -> None:
     assert [c.line for c in iface.children] == ["shutdown", "description x"]
 
 
+def test_parse_merges_repeated_empty_section() -> None:
+    # First occurrence is an empty section (a leaf at parse time); the second re-declares
+    # it with children. The empty header must not be mistaken for a toggle and dropped.
+    text = "interface Ethernet1/1\n\ninterface Ethernet1/1\n  no shutdown\n"
+    tree = PARSER.parse(text)
+    assert [c.line for c in tree.root.children] == ["interface Ethernet1/1"]
+    iface = tree.root.children[0]
+    assert not iface.is_leaf
+    assert [c.line for c in iface.children] == ["no shutdown"]
+
+
 def test_parse_deduplicates_repeated_leaf() -> None:
     text = "interface eth1\n  shutdown\n  shutdown\n"
     tree = PARSER.parse(text)
