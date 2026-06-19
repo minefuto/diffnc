@@ -73,7 +73,7 @@ Output is config-mode commands only — no `configure terminal` / `end` / `commi
 * **Cisco-like (NX-OS / IOS / IOS-XE / IOS-XR / EOS):** emits section navigation plus `<line>` for adds and `no <line>` for deletes. `X` / `no X` toggles are tracked as state: a transition (e.g. `no shutdown` → `shutdown`) emits just the new value, while a *removed* toggle resets to default — `default <cmd>` on vendors that support it (IOS / IOS-XE / NX-OS / EOS) and the inverted `no` on IOS-XR.
 * **Junos hierarchical:** emits flat `set <path>` and `delete <path>` lines. A node whose only change is its inactive state (`inactive: <line>`) emits `activate <path>` / `deactivate <path>` instead of a `delete`/`set` pair.
 * **Junos set:** emits `<line>` verbatim for adds and `delete <path>` (with the `set ` prefix stripped) for deletes. `activate` / `deactivate` are tracked as state: a removed toggle inverts to its counterpart (`deactivate X` → `activate X`) rather than deleting the underlying `set`.
-* **Order-sensitive sections** (ACL, `policy-map`, Junos `firewall filter` / `policy-statement` terms): on any change, the entire section is deleted and recreated from *B* — partial in-place edits are not attempted.
+* **Order-sensitive sections** (ACL, `policy-map`, NX-OS `configure maintenance profile`, Junos `firewall filter` / `policy-statement` terms): on any change, the entire section is deleted and recreated from *B* — partial in-place edits are not attempted.
 
 Exceptions:
 
@@ -187,6 +187,7 @@ The paths below are evaluated in declaration order by the device, so swapping te
 | Junos | `policy-options.policy-statement <name>` | `term <name>` |
 | Cisco-like (IOS / IOS-XE / IOS-XR / NX-OS / EOS) | `ip access-list <name>`, `ipv6 access-list <name>`, `mac access-list <name>` | ACE lines |
 | Cisco-like (same as above) | `policy-map <name>` | `class <name>` blocks |
+| Cisco NX-OS | `configure maintenance profile <normal-mode\|maintenance-mode>` | GIR profile command lines |
 
 Pure reorders (children whose rendered subtree is byte-identical on both sides, just in a different position) are surfaced with a `!` marker, once per moved subtree. Children whose contents also changed continue to use `-` / `+` pairs.
 

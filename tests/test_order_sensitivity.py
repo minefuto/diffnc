@@ -222,6 +222,41 @@ def test_nxos_ip_access_list_ace_reorder_is_a_diff() -> None:
     assert "ip access-list FOO" in out
 
 
+def test_nxos_maintenance_profile_reorder_is_a_diff() -> None:
+    a = (
+        "configure maintenance profile maintenance-mode\n"
+        "  router ospf 1 isolate\n"
+        "  router bgp 65000 isolate\n"
+    )
+    b = (
+        "configure maintenance profile maintenance-mode\n"
+        "  router bgp 65000 isolate\n"
+        "  router ospf 1 isolate\n"
+    )
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert _has_reorder_line(out)
+    assert not _has_minus_line(out)
+    assert not _has_plus_line(out)
+    assert "configure maintenance profile maintenance-mode" in out
+
+
+def test_nxos_maintenance_profile_normal_mode_reorder_is_a_diff() -> None:
+    a = (
+        "configure maintenance profile normal-mode\n"
+        "  router ospf 1 no isolate\n"
+        "  router bgp 65000 no isolate\n"
+    )
+    b = (
+        "configure maintenance profile normal-mode\n"
+        "  router bgp 65000 no isolate\n"
+        "  router ospf 1 no isolate\n"
+    )
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert _has_reorder_line(out)
+    assert not _has_minus_line(out)
+    assert not _has_plus_line(out)
+
+
 def test_ios_policy_map_class_reorder_is_a_diff() -> None:
     a = (
         "policy-map QOS\n"
