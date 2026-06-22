@@ -137,6 +137,38 @@ def test_junos_set_activate_deactivate_diff_as_distinct_lines() -> None:
     assert "+deactivate interfaces ge-0/0/0 unit 0\n" in out
 
 
+def test_junos_set_clusters_same_path_by_stripped_keyword() -> None:
+    # set and deactivate of the same path differ only in the leading keyword; the diff pulls
+    # the later deactivate adjacent to the set, while the unrelated line keeps its position.
+    a = (
+        "set protocols bgp group CORE neighbor 11.11.11.2\n"
+        "set protocols bgp group CORE neighbor 11.11.11.21 passive\n"
+        "deactivate protocols bgp group CORE neighbor 11.11.11.2\n"
+    )
+    out = "".join(unified_diff(a, "", lineterm="\n"))
+    assert out == (
+        "-set protocols bgp group CORE neighbor 11.11.11.2\n"
+        "-deactivate protocols bgp group CORE neighbor 11.11.11.2\n"
+        "-set protocols bgp group CORE neighbor 11.11.11.21 passive\n"
+    )
+
+
+def test_junos_set_cluster_keeps_unrelated_equal_lines_quiet() -> None:
+    # A shared-path set+deactivate cluster surfaces together while an unrelated equal line
+    # still produces no diff (guards the matched-anchor interleave under clustering).
+    a = (
+        "set system host-name router1\n"
+        "set protocols bgp group CORE neighbor 10.0.0.1\n"
+        "deactivate protocols bgp group CORE neighbor 10.0.0.1\n"
+    )
+    b = "set system host-name router1\n"
+    out = "".join(unified_diff(a, b, lineterm="\n"))
+    assert out == (
+        "-set protocols bgp group CORE neighbor 10.0.0.1\n"
+        "-deactivate protocols bgp group CORE neighbor 10.0.0.1\n"
+    )
+
+
 def test_junos_hier_inactive_section_identical_subtree_collapses() -> None:
     # Only the inactive state of the section changed; its subtree is identical, so the diff
     # collapses to a single ``!`` line with no braces instead of re-emitting the subtree.

@@ -88,6 +88,13 @@ class _JunosSetParser:
 
         return False
 
+    def group_sort_key(self, line: str) -> str:
+        """Keyword-stripped path so a path's set/(de)activate ops cluster together."""
+
+        if line.startswith(_DELETE_PREFIX):
+            return line[len(_DELETE_PREFIX) :]
+        return _strip_set_prefix(line)
+
     def is_toggle_state(self, line: str) -> bool:
         """``activate <path>`` / ``deactivate <path>`` are toggle states (not ``set`` values)."""
 

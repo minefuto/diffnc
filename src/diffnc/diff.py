@@ -29,6 +29,7 @@ from diffnc.ir import ConfigNode, ConfigTree
 from diffnc.vendors.base import (
     VendorParser,
     base_identity_for,
+    group_sort_key_for,
     is_order_sensitive_for,
     leaf_section_render_equivalent,
     render_subtree,
@@ -270,6 +271,20 @@ def _collect_reorder_pairs(
     return reordered_a, reordered_b
 
 
+def _cluster(children: list[ConfigNode], keys: list[str | None]) -> list[ConfigNode]:
+    """Stable-cluster *children* by first occurrence of each group key.
+
+    Groups appear in first-appearance order; members keep input order. Lines sharing a key
+    are pulled adjacent to that key's first occurrence.
+    """
+
+    first_seen: dict[str | None, int] = {}
+    for i, key in enumerate(keys):
+        first_seen.setdefault(key, i)
+    order = sorted(range(len(children)), key=lambda i: (first_seen[keys[i]], i))
+    return [children[i] for i in order]
+
+
 def _diff_children_unordered(
     parser: VendorParser,
     node_a: ConfigNode,
@@ -295,6 +310,16 @@ def _diff_children_unordered(
 
     a_children = node_a.children
     b_children = node_b.children
+    # Cluster related children (e.g. junos_set's set/(de)activate of the same path) by their
+    # keyword-stripped key when the vendor opts in. Stable: groups appear in first-occurrence
+    # order, members keep input order, so only related lines are pulled adjacent. Local copies
+    # only — the IR child lists are shared with parser.format()/reconcile and must not move.
+    group_keys_a = [group_sort_key_for(parser, child.line) for child in a_children]
+    if any(key is not None for key in group_keys_a):
+        a_children = _cluster(a_children, group_keys_a)
+        b_children = _cluster(
+            b_children, [group_sort_key_for(parser, child.line) for child in b_children]
+        )
     # Match on base identity (toggle prefixes stripped) so an (de)activated node pairs with
     # its active form; a base-key match whose lines still differ is an inactive toggle.
     a_keys = [base_identity_for(parser, child.line) for child in a_children]

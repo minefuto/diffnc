@@ -138,6 +138,21 @@ def base_identity_for(parser: VendorParser, line: str) -> str:
     return impl(line)
 
 
+def group_sort_key_for(parser: VendorParser, line: str) -> str | None:
+    """Clustering key for *line*, or ``None`` when the parser opts out.
+
+    A parser may expose ``group_sort_key(line)`` so that order-insensitive children whose
+    keys match are displayed together (e.g. junos_set folding the leading
+    set/delete/(de)activate keyword so a path's operations cluster). Defaults to ``None``:
+    vendors without it keep pure input-order interleaving.
+    """
+
+    impl = getattr(parser, "group_sort_key", None)
+    if impl is None:
+        return None
+    return impl(line)
+
+
 def render_toggle_line_for(
     parser: VendorParser, b_line: str, depth: int, *, became_active: bool, kind: str
 ) -> str:

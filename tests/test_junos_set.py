@@ -95,6 +95,16 @@ def test_set_delete_unmatched_is_noop() -> None:
     assert [c.line for c in tree.root.children] == ["set system host-name foo"]
 
 
+def test_set_group_sort_key_strips_leading_keyword() -> None:
+    path = "protocols bgp group CORE neighbor 11.11.11.2"
+    assert PARSER.group_sort_key(f"set {path}") == path
+    assert PARSER.group_sort_key(f"deactivate {path}") == path
+    assert PARSER.group_sort_key(f"activate {path}") == path
+    assert PARSER.group_sort_key(f"delete {path}") == path
+    # set and deactivate of the same path share a clustering key.
+    assert PARSER.group_sort_key(f"set {path}") == PARSER.group_sort_key(f"deactivate {path}")
+
+
 def test_set_activate_deactivate_toggle_collapses() -> None:
     text = (
         "set interfaces ge-0/0/0 unit 0\n"
