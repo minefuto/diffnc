@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from diffnc.errors import ParseError
+from diffnc.vendors.base import group_sort_key_for
 from diffnc.vendors.junos_set import PARSER
 
 
@@ -97,12 +98,14 @@ def test_set_delete_unmatched_is_noop() -> None:
 
 def test_set_group_sort_key_strips_leading_keyword() -> None:
     path = "protocols bgp group CORE neighbor 11.11.11.2"
-    assert PARSER.group_sort_key(f"set {path}") == path
-    assert PARSER.group_sort_key(f"deactivate {path}") == path
-    assert PARSER.group_sort_key(f"activate {path}") == path
-    assert PARSER.group_sort_key(f"delete {path}") == path
+    assert group_sort_key_for(PARSER, f"set {path}") == path
+    assert group_sort_key_for(PARSER, f"deactivate {path}") == path
+    assert group_sort_key_for(PARSER, f"activate {path}") == path
+    assert group_sort_key_for(PARSER, f"delete {path}") == path
     # set and deactivate of the same path share a clustering key.
-    assert PARSER.group_sort_key(f"set {path}") == PARSER.group_sort_key(f"deactivate {path}")
+    assert group_sort_key_for(PARSER, f"set {path}") == group_sort_key_for(
+        PARSER, f"deactivate {path}"
+    )
 
 
 def test_set_activate_deactivate_toggle_collapses() -> None:
