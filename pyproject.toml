@@ -1,6 +1,6 @@
 [project]
 name = "diffnc"
-version = "0.0.6"
+version = "0.0.7"
 description = "Structural diff library for network device configurations"
 readme = "README.md"
 authors = [
