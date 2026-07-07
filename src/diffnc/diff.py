@@ -38,6 +38,8 @@ from diffnc.vendors.base import (
 
 _SIMILARITY_CUTOFF = 0.6  # difflib.get_close_matches の既定値に合わせる
 _TOKEN_SHARE_CUTOFF = 0.4  # 先頭コマンド語が一致する場合に適用する緩い二次閾値
+_MAX_BUCKET_PAIRS = 2500  # Phase 2 バケツを次のトークンで再分割する |A|x|B| の上限
+_MAX_RATIO_CHECKS = 200_000  # Phase 2 全体での SequenceMatcher 比較回数バジェット
 
 
 @dataclass(frozen=True)
@@ -399,11 +401,21 @@ def _pair_changed_leaves(
       ``vlan 1`` → ``vlan 1,100,200,300``) is matched within shared leading-token buckets by
       ``difflib`` ratio, highest first, each side used once. The reused matcher is gated by the
       cheap ``real_quick_ratio`` / ``quick_ratio`` upper bounds (the prefilter
-      :func:`difflib.get_close_matches` uses). The residual is small, so this stays cheap.
+      :func:`difflib.get_close_matches` uses).
+
+      A leading-token bucket can degenerate: junos_set lines *all* start with ``set``, so a
+      large varied diff would put every residual leaf in one bucket and the all-pairs ratio
+      scan would go quadratic (a 50k-line diff took upwards of half an hour). Any bucket whose
+      ``|A| x |B|`` exceeds :data:`_MAX_BUCKET_PAIRS` is therefore recursively re-split on the
+      next token position until it fits (lines out of tokens fall into a ``None`` sub-bucket;
+      since sibling lines are unique this always terminates). As a last-resort guard the whole
+      phase stops after :data:`_MAX_RATIO_CHECKS` comparisons — pairing only improves ``-``/``+``
+      adjacency in the display, so degrading to unpaired output is always safe.
 
     Restricting Phase 2 to a shared leading token (and Phase 1 to a shared head) is what makes
     a value change meaningful; cross-token pairs — rare even under the old all-pairs scan — are
-    intentionally not formed.
+    intentionally not formed. Buckets small enough to skip re-splitting see exactly the same
+    comparisons as before the cap existed.
 
     Returns ``(a_child_index -> paired b node, set of paired b child indices)`` so the
     caller can emit the ``+`` next to its ``-`` and suppress it elsewhere.
@@ -435,33 +447,67 @@ def _pair_changed_leaves(
             _commit(ai, bucket.popleft())
 
     # Phase 2: ratio-match the residual within shared leading-token buckets.
+    rem_a_by_token: dict[str, list[int]] = {}
+    for ai, (_, a_node) in enumerate(a_only):
+        if ai not in used_a:
+            rem_a_by_token.setdefault(_leading_token(a_node.line), []).append(ai)
     rem_b_by_token: dict[str, list[int]] = {}
     for bi, (_, b_node) in enumerate(b_only):
         if bi not in used_b:
             rem_b_by_token.setdefault(_leading_token(b_node.line), []).append(bi)
-    if not rem_b_by_token:
-        return a_index_to_b_node, paired_b_positions
+
+    # Re-split any oversized bucket on successive token positions (see docstring). Token
+    # lists are computed lazily: only lines that land in an oversized bucket pay the split.
+    a_tokens: dict[int, list[str]] = {}
+    b_tokens: dict[int, list[str]] = {}
+    pending = [
+        (a_bucket, rem_b_by_token[token], 1)
+        for token, a_bucket in rem_a_by_token.items()
+        if token in rem_b_by_token
+    ]
+    buckets: list[tuple[list[int], list[int]]] = []
+    while pending:
+        a_bucket, b_bucket, depth = pending.pop()
+        if len(a_bucket) * len(b_bucket) <= _MAX_BUCKET_PAIRS:
+            buckets.append((a_bucket, b_bucket))
+            continue
+        a_split: dict[str | None, list[int]] = {}
+        for ai in a_bucket:
+            tokens = a_tokens.setdefault(ai, a_only[ai][1].line.split())
+            a_split.setdefault(tokens[depth] if depth < len(tokens) else None, []).append(ai)
+        b_split: dict[str | None, list[int]] = {}
+        for bi in b_bucket:
+            tokens = b_tokens.setdefault(bi, b_only[bi][1].line.split())
+            b_split.setdefault(tokens[depth] if depth < len(tokens) else None, []).append(bi)
+        for key, sub_a in a_split.items():
+            sub_b = b_split.get(key)
+            if sub_b:
+                pending.append((sub_a, sub_b, depth + 1))
 
     candidates: list[tuple[float, int, int]] = []
     matcher = SequenceMatcher()  # autojunk left at difflib's default, as the old all-pairs scan did
-    for ai, (_, a_node) in enumerate(a_only):
-        if ai in used_a:
-            continue
-        bucket = rem_b_by_token.get(_leading_token(a_node.line))
-        if not bucket:
-            continue
-        matcher.set_seq2(a_node.line)
-        for bi in bucket:
-            matcher.set_seq1(b_only[bi][1].line)
-            if (
-                matcher.real_quick_ratio() < _TOKEN_SHARE_CUTOFF
-                or matcher.quick_ratio() < _TOKEN_SHARE_CUTOFF
-            ):
-                continue
-            ratio = matcher.ratio()
-            if ratio >= _TOKEN_SHARE_CUTOFF:
-                candidates.append((ratio, ai, bi))
-    candidates.sort(key=lambda t: t[0], reverse=True)
+    checks_left = _MAX_RATIO_CHECKS
+    for a_bucket, b_bucket in buckets:
+        for ai in a_bucket:
+            matcher.set_seq2(a_only[ai][1].line)
+            for bi in b_bucket:
+                if checks_left <= 0:
+                    break
+                checks_left -= 1
+                matcher.set_seq1(b_only[bi][1].line)
+                if (
+                    matcher.real_quick_ratio() < _TOKEN_SHARE_CUTOFF
+                    or matcher.quick_ratio() < _TOKEN_SHARE_CUTOFF
+                ):
+                    continue
+                ratio = matcher.ratio()
+                if ratio >= _TOKEN_SHARE_CUTOFF:
+                    candidates.append((ratio, ai, bi))
+            if checks_left <= 0:
+                break
+        if checks_left <= 0:
+            break
+    candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
     for _, ai, bi in candidates:
         if ai not in used_a and bi not in used_b:
             _commit(ai, bi)

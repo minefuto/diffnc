@@ -346,6 +346,50 @@ def test_short_leaf_value_change_paired_by_leading_token() -> None:
     assert out == ("-vlan 1\n+vlan 1,100,200,300\n-license smart transport smart\n")
 
 
+def test_junos_set_large_varied_diff_completes_quickly() -> None:
+    """A big junos_set diff must not go quadratic in the changed-leaf pairing.
+
+    Every junos_set line starts with ``set``, so before the bucket re-splitting all
+    residual leaves shared one leading-token bucket and a 1000x1000 residual took
+    ~2 minutes of ``SequenceMatcher.ratio`` calls. Post-fix this runs in well under a
+    second; the generous bound only guards against reintroducing the blow-up.
+    """
+
+    import time
+
+    a_only = [
+        f"set interfaces ge-0/0/{i % 48} unit {i} family inet address 10.1.{i % 250}.1/31"
+        for i in range(0, 2000, 2)
+    ]
+    b_only = [
+        f"set interfaces ge-1/0/{i % 48} unit {i} family inet address 10.1.{i % 250}.1/31"
+        for i in range(1, 2000, 2)
+    ]
+    common = [f"set policy-options policy-statement P{i} term T then accept" for i in range(2000)]
+    started = time.monotonic()
+    out = list(unified_diff("\n".join(common + a_only), "\n".join(common + b_only)))
+    elapsed = time.monotonic() - started
+    assert len(out) == 2000
+    assert elapsed < 20
+
+
+def test_junos_set_oversized_bucket_still_pairs_within_refined_prefix() -> None:
+    """Re-splitting an oversized ``set`` bucket keeps same-path value pairs adjacent.
+
+    60x60 residual pairs exceed ``_MAX_BUCKET_PAIRS``, forcing the token re-split; lines
+    sharing their path up to the changed (non-trailing) token land in the same refined
+    bucket and still pair, so each ``+`` renders right after its ``-``.
+    """
+
+    a = [f"set interfaces ge-0/0/{i} unit 0 description POD1 host-{i}" for i in range(60)]
+    b = [f"set interfaces ge-0/0/{i} unit 0 description POD2 host-{i}" for i in range(60)]
+    out = list(unified_diff("\n".join(a), "\n".join(b)))
+    assert len(out) == 120
+    for i in range(60):
+        assert out[2 * i] == f"-set interfaces ge-0/0/{i} unit 0 description POD1 host-{i}"
+        assert out[2 * i + 1] == f"+set interfaces ge-0/0/{i} unit 0 description POD2 host-{i}"
+
+
 def test_junos_leaf_to_section_still_renders_as_replace() -> None:
     """A Junos leaf becoming a populated section must not collapse into a context header."""
 

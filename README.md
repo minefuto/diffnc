@@ -219,6 +219,34 @@ Example: a reorder of one term plus a content change in another term
  }
 ```
 
+## How changed values are paired
+
+Within one parent section, a leaf that exists only in A and a leaf that exists only in B are displayed as an adjacent `-`/`+` pair when they look like the same setting with a changed value, instead of clumping all deletes before all inserts:
+
+```diff
+ interface Ethernet1/2
+-  ip address 192.168.1.1/24
++  ip address 192.168.1.2/24
+-  ip ospf cost 50
++  ip ospf cost 100
+```
+
+Candidates are paired in two passes:
+
+1. **Exact head match.** Leaves that are identical up to their trailing token (`ip ospf cost 50` → `ip ospf cost 100`) are paired directly.
+2. **Similarity fallback.** Leftover leaves that share their leading command word are paired by `difflib` similarity ratio (cutoff 0.4), best match first, each side used at most once. This catches changes that are not in the trailing token, e.g. `description uplink` → `description uplink-to-spine` or `vlan 1` → `vlan 1,100,200,300`. Leaves with different leading words are never paired.
+
+Pairing only affects where lines appear in the output. The set of `-`/`+` lines is decided purely by full-line matching; a leaf that finds no partner is still emitted, just not adjacent to a counterpart.
+
+### Performance guards on large diffs
+
+The similarity fallback is guarded so it cannot go quadratic on large residuals. This matters most for Junos set form, where every line starts with `set` and would otherwise fall into a single all-pairs comparison bucket:
+
+* A leading-word bucket whose candidate-pair count (`A-side × B-side`) exceeds a fixed cap is recursively re-split on successive tokens (for `set` form this follows the configuration path) until each sub-bucket is small enough. Inside an over-cap bucket, two leaves then only pair if they also share the token prefix down to the split point.
+* The whole similarity phase stops after a fixed total comparison budget as a last resort.
+
+Both limits degrade only the `-`/`+` adjacency described above — the diff content itself never changes, and buckets below the cap behave exactly as if no limit existed. This keeps 50k-line `display set` diffs in well under a second.
+
 ## Junos inactive/active toggles
 
 When a Junos hierarchical node only flips its `inactive:` state (the node itself and its subtree are otherwise identical), the diff does not re-emit the whole subtree as a `-`/`+` pair. Instead it pairs the two states as one node and marks the new state with a `!`:
