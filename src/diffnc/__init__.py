@@ -3,7 +3,7 @@
 Public API mirrors :mod:`difflib`:
 
 * :func:`unified_diff` — compact, change-focused diff with section context.
-* :func:`ndiff` — every-line diff with ``- ``/``+ ``/``  `` markers.
+* :func:`ndiff` — every-line diff with ``- ``/``+ ``/``! ``/``  `` markers.
 * :func:`reconcile` — config-mode commands that transform *A* into *B*.
 * :func:`detect_vendor` — auto-detect the vendor for a config blob.
 

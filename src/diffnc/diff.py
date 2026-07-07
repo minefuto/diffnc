@@ -1,7 +1,9 @@
 """Structural diff engine.
 
-The algorithm walks two :class:`~diffnc.ir.ConfigTree`'s in parallel, computing per-level
-opcodes with :class:`difflib.SequenceMatcher` keyed on each node's ``line``. For matched
+The algorithm walks two :class:`~diffnc.ir.ConfigTree`'s in parallel, matching each level's
+children by their ``line``. Most parents are matched order-insensitively (a pure reorder
+produces no diff); parents whose children are semantically ordered (ACLs, Junos filter
+terms, …) are instead matched positionally with :class:`difflib.SequenceMatcher`. For matched
 sections we recurse so that only their *changed descendants* surface; the matched section
 header itself is emitted as a context line so the user can see the surrounding scope.
 
@@ -9,7 +11,7 @@ Two flavours are exposed, both modelled on :mod:`difflib`:
 
 * :func:`unified_diff` — compact: only changed lines plus the section path leading to them
   (and ``--- a`` / ``+++ b`` headers if file names are supplied).
-* :func:`ndiff` — verbose: every line is shown, prefixed with ``- ``, ``+ `` or ``  ``.
+* :func:`ndiff` — verbose: every line is shown, prefixed with ``- ``, ``+ ``, ``! `` or ``  ``.
 
 Both functions accept either ``str`` (raw config text) or ``list[str]`` (already-split
 lines, joined internally) for parity with :mod:`difflib`.
@@ -36,10 +38,9 @@ from diffnc.vendors.base import (
     render_toggle_line_for,
 )
 
-_SIMILARITY_CUTOFF = 0.6  # difflib.get_close_matches の既定値に合わせる
-_TOKEN_SHARE_CUTOFF = 0.4  # 先頭コマンド語が一致する場合に適用する緩い二次閾値
-_MAX_BUCKET_PAIRS = 2500  # Phase 2 バケツを次のトークンで再分割する |A|x|B| の上限
-_MAX_RATIO_CHECKS = 200_000  # Phase 2 全体での SequenceMatcher 比較回数バジェット
+_TOKEN_SHARE_CUTOFF = 0.4  # looser secondary threshold when the leading command word matches
+_MAX_BUCKET_PAIRS = 2500  # |A|x|B| ceiling above which a Phase 2 bucket re-splits on the next token
+_MAX_RATIO_CHECKS = 200_000  # budget for total SequenceMatcher comparisons across Phase 2
 
 
 @dataclass(frozen=True)

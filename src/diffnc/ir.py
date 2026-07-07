@@ -5,7 +5,7 @@ command line plus its (ordered) children. The whole document is wrapped in :clas
 which records the originating vendor so that the diff engine can later format output back
 in the input's flavour.
 
-The constructors in this module also implement the normalisation rules described in the plan:
+The constructors in this module also implement the following normalisation rules:
 
 * Same-name non-leaf siblings get merged (their children concatenate).
 * Duplicate leaf siblings collapse to one occurrence.

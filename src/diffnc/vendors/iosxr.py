@@ -1,9 +1,9 @@
 """Cisco IOS-XR vendor parser.
 
-IOS-XR uses the same indent-based section grammar as IOS (1-space unit) but has its own
-configuration session terminators — ``commit`` (and the less common ``root`` /
-``abort``) — that we treat the same way IOS treats ``end`` / ``exit``: drop them on
-parse. Interface naming conventions (``Bundle-Ether1``, 4-tuple ``GigabitEthernet0/0/0/0``)
+IOS-XR uses the same indent-based section grammar as IOS (1-space unit). Alongside the
+``end`` / ``exit`` terminators it shares with IOS, it adds its own configuration session
+terminators — ``commit`` and the less common ``root`` — which we likewise drop on parse.
+Interface naming conventions (``Bundle-Ether1``, 4-tuple ``GigabitEthernet0/0/0/0``)
 matter only for auto-detection and are handled in :mod:`diffnc.detect`.
 """
 
